@@ -8,12 +8,13 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
     "rich>=15.0.0",
     "typer>=0.26.2",
 ]
 
 [project.scripts]
-specforge = "specforge.main:app"
+specforge = "specforge.cli:app"
 
 [build-system]
 requires = ["hatchling"]
