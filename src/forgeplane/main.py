@@ -1,4 +1,4 @@
-from specforge.cli import app
+from forgeplane.cli import app
 
 if __name__ == "__main__":
     app()

@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 # app хранит все команды CLI: scan, generate и будущие команды.
-app = typer.Typer(help="SpecForge — инструмент для работы с API-спецификациями")
+app = typer.Typer(help="Forgeplane — инструмент для работы с API-спецификациями")
 
 # Rich нужен для красивого текстового отчёта в терминале.
 console = Console()
@@ -53,7 +53,7 @@ def scan_docs(path: Path) -> ScanReport:
 
 def print_text_report(report: ScanReport) -> None:
     # Table из Rich рисует аккуратную таблицу в терминале.
-    table = Table(title="SpecForge scan report")
+    table = Table(title="Forgeplane scan report")
     table.add_column("Metric")
     table.add_column("Value")
 
@@ -76,8 +76,8 @@ def print_text_report(report: ScanReport) -> None:
 @app.callback()
 def main() -> None:
     # Callback нужен, чтобы Typer сделал приложение с подкомандами:
-    # specforge scan ..., specforge generate ...
-    """SpecForge CLI."""
+    # forgeplane scan ..., forgeplane generate ...
+    """Forgeplane CLI."""
 
 
 @app.command()
