@@ -33,6 +33,11 @@ Output formats:
 - `json`
 - `yaml`
 
+The codebase also includes early Pydantic schemas for API readiness checks:
+
+- `SectionCheck` — describes whether an expected documentation section exists, how much content it has, and whether it contains TODO markers.
+- `ScanResult` — describes readiness for one file, including a normalized score from `0` to `100`, missing sections, weak sections, TODO findings, and a constrained readiness value: `ready`, `partial`, or `not_ready`.
+
 ## Installation
 
 Forgeplane uses Python `>=3.13`.
@@ -125,7 +130,10 @@ forgeplane/
 │   └── forgeplane/
 │       ├── __init__.py
 │       ├── cli.py
-│       └── main.py
+│       ├── main.py
+│       └── specs/
+│           ├── __init__.py
+│           └── schemas.py
 ├── main.py
 ├── CONTRIBUTING.md
 ├── LICENSE
