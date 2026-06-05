@@ -1,3 +1,4 @@
+# Core package metadata used by build tools and package indexes.
 [project]
 name = "forgeplane"
 version = "0.1.0"
@@ -5,6 +6,8 @@ description = "CLI tool for generating API specs"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.13"
+
+# Runtime dependencies needed by the Forgeplane CLI.
 dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.13.4",
@@ -14,12 +17,26 @@ dependencies = [
     "typer>=0.26.2",
 ]
 
+# Console entry point installed as the `forgeplane` command.
 [project.scripts]
 forgeplane = "forgeplane.cli:app"
 
+# Hatchling builds the package from the src-layout project.
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Include only the forgeplane package when building wheels.
 [tool.hatch.build.targets.wheel]
 packages = ["src/forgeplane"]
+
+# Strict type checking keeps the source tree fully annotated.
+[tool.mypy]
+strict = true
+
+# Development-only tools used for local checks and CI.
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "types-pyyaml>=6.0.12.20260518",
+]

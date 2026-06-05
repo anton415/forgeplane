@@ -38,6 +38,13 @@ The codebase also includes early Pydantic schemas for API readiness checks:
 - `SectionCheck` — describes whether an expected documentation section exists, how much content it has, and whether it contains TODO markers.
 - `ScanResult` — describes readiness for one file, including a normalized score from `0` to `100`, missing sections, weak sections, TODO findings, and a constrained readiness value: `ready`, `partial`, or `not_ready`.
 
+The filesystem scanning logic is split into typed modules:
+
+- `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic.
+- `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI.
+
+The source tree is checked with `mypy` in strict mode.
+
 ## Installation
 
 Forgeplane uses Python `>=3.13`.
@@ -133,6 +140,8 @@ forgeplane/
 │       ├── main.py
 │       └── specs/
 │           ├── __init__.py
+│           ├── files.py
+│           ├── scanner.py
 │           └── schemas.py
 ├── main.py
 ├── CONTRIBUTING.md
@@ -160,6 +169,12 @@ Run a scan against a documentation directory:
 
 ```bash
 uv run forgeplane scan path/to/docs
+```
+
+Run strict type checking:
+
+```bash
+uv run mypy src/
 ```
 
 ## Roadmap

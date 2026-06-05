@@ -5,13 +5,15 @@ scan documentation folders and print reports in different formats.
 """
 
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias, TypedDict
+from typing import Annotated, Literal, TypeAlias
 import json
 
 import typer
 import yaml
 from rich.console import Console
 from rich.table import Table
+
+from forgeplane.specs.scanner import ScanReport, scan_docs
 
 # Typer uses this object to collect commands and expose them as a CLI.
 # The console script in pyproject.toml points to this app object.
@@ -22,42 +24,6 @@ console = Console()
 
 # Keep output formats type-safe and limited to the values supported below.
 OutputFormat: TypeAlias = Literal["json", "text", "yaml"]
-
-
-class ScanReport(TypedDict):
-    """Report structure returned by scan_docs."""
-
-    path: str
-    files_count: int
-    total_size_bytes: int
-    extensions: dict[str, int]
-    files: list[str]
-
-
-def scan_docs(path: Path) -> ScanReport:
-    # rglob("*") recursively walks through all files and directories under path.
-    # The is_file() filter skips directories and keeps only real files.
-    files = sorted(item for item in path.rglob("*") if item.is_file())
-
-    # Collect file extension counts and total size.
-    extensions: dict[str, int] = {}
-    total_size = 0
-
-    for file in files:
-        # Files without an extension are counted in a separate group.
-        suffix = file.suffix.lower() or "no_extension"
-        extensions[suffix] = extensions.get(suffix, 0) + 1
-        # stat().st_size reads the file size in bytes from the filesystem.
-        total_size += file.stat().st_size
-
-    # Return a plain dictionary whose shape is described by ScanReport.
-    return {
-        "path": str(path),
-        "files_count": len(files),
-        "total_size_bytes": total_size,
-        "extensions": extensions,
-        "files": [str(file.relative_to(path)) for file in files],
-    }
 
 
 def print_text_report(report: ScanReport) -> None:
