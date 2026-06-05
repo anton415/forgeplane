@@ -130,6 +130,8 @@ forgeplane/
 │       ├── cli.py
 │       └── main.py
 ├── main.py
+├── CONTRIBUTING.md
+├── LICENSE
 ├── pyproject.toml
 ├── uv.lock
 └── README.md
@@ -166,7 +168,7 @@ Planned directions:
 - Add tests.
 - Add CI.
 - Add examples for real-world API documentation.
-- Define contribution guidelines.
+- Expand contribution guidelines as the project matures.
 - Publish package metadata and release process.
 
 ## Design principles
@@ -194,8 +196,10 @@ Good first contribution areas:
 
 Before submitting larger changes, open an issue describing the proposed direction.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup and contribution licensing.
+
 ## License
 
-No license file is currently included in the repository.
+Forgeplane is licensed under the Apache License 2.0.
 
-Before using Forgeplane in production or redistributing it, add an explicit open source license such as MIT, Apache-2.0, or another license that matches the intended governance model.
+Copyright 2026 Anton Serdyuchenko.
