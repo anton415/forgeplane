@@ -68,7 +68,7 @@ forgeplane --help
 ### Scan documentation
 
 ```bash
-forgeplane scan docs
+forgeplane scan path/to/docs
 ```
 
 Text output is used by default.
@@ -76,13 +76,13 @@ Text output is used by default.
 ### JSON output
 
 ```bash
-forgeplane scan docs --format json
+forgeplane scan path/to/docs --format json
 ```
 
 ### YAML output
 
 ```bash
-forgeplane scan docs --format yaml
+forgeplane scan path/to/docs --format yaml
 ```
 
 ### Generate API specification
@@ -96,14 +96,14 @@ This command is currently a placeholder and will be implemented in future versio
 ## Example
 
 ```bash
-forgeplane scan docs --format json
+forgeplane scan path/to/docs --format json
 ```
 
 Example output:
 
 ```json
 {
-  "path": "/path/to/forgeplane/docs",
+  "path": "/path/to/docs",
   "files_count": 2,
   "total_size_bytes": 128,
   "extensions": {
@@ -121,9 +121,6 @@ Example output:
 
 ```text
 forgeplane/
-├── docs/
-│   ├── api.md
-│   └── openapi.yaml
 ├── src/
 │   └── forgeplane/
 │       ├── __init__.py
@@ -151,10 +148,10 @@ Run the CLI locally:
 uv run forgeplane --help
 ```
 
-Run a scan against the example docs directory:
+Run a scan against a documentation directory:
 
 ```bash
-uv run forgeplane scan docs
+uv run forgeplane scan path/to/docs
 ```
 
 ## Roadmap

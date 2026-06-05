@@ -20,10 +20,10 @@ Run the CLI locally:
 uv run forgeplane --help
 ```
 
-Run a basic scan check:
+Run a basic scan check against a documentation directory:
 
 ```bash
-uv run forgeplane scan docs
+uv run forgeplane scan path/to/docs
 ```
 
 ## Contribution Licensing
