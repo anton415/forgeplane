@@ -1,10 +1,23 @@
 """Typed scanner for API documentation directories."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, TypedDict
+from typing import Dict, Final, List, Optional, Tuple, TypedDict
 
 from forgeplane.specs.files import FileEntry, collect_files
+
+# Spec sections we expect every Forgeplane-managed Markdown spec to contain.
+EXPECTED_SPEC_SECTIONS: Final[Tuple[str, ...]] = (
+    "Goal",
+    "Context",
+    "Acceptance Criteria",
+    "Risks",
+    "Open Questions",
+)
+
+# Match level-2 Markdown headings; capture the heading text without the prefix.
+_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
 class ScanReport(TypedDict):
@@ -71,3 +84,23 @@ def build_scan_summary(path: Path, files: Optional[List[FileEntry]] = None) -> S
 
 def scan_docs(path: Path) -> ScanReport:
     return build_scan_summary(path).to_report()
+
+
+def parse_sections(text: str) -> Dict[str, Optional[str]]:
+    """Return body text for each expected spec section, or None when missing."""
+    # Walk all ## headings so any unexpected one still terminates the previous block.
+    matches = list(_HEADING_PATTERN.finditer(text))
+    bodies: Dict[str, str] = {}
+    for index, match in enumerate(matches):
+        name = match.group(1).strip()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        bodies[name] = text[start:end].strip()
+
+    # Empty bodies collapse to None so downstream readiness checks treat them as missing.
+    return {section: (bodies.get(section) or None) for section in EXPECTED_SPEC_SECTIONS}
+
+
+def parse_spec_file(path: Path) -> Dict[str, Optional[str]]:
+    """Read a Markdown spec from disk and parse its expected sections."""
+    return parse_sections(path.read_text(encoding="utf-8"))
