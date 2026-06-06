@@ -38,5 +38,10 @@ strict = true
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",
+    "pytest>=8.4.0",
     "types-pyyaml>=6.0.12.20260518",
 ]
+
+# Run pytest against the tests/ directory by default.
+[tool.pytest.ini_options]
+testpaths = ["tests"]

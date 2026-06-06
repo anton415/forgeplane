@@ -145,6 +145,9 @@ forgeplane/
 │           ├── files.py
 │           ├── scanner.py
 │           └── schemas.py
+├── tests/
+│   ├── conftest.py
+│   └── test_scanner.py
 ├── examples/
 │   ├── good_spec.md
 │   └── weak_spec.md
@@ -181,6 +184,14 @@ Run strict type checking:
 ```bash
 uv run mypy src/
 ```
+
+Run the test suite:
+
+```bash
+uv run pytest -v
+```
+
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser.
 
 ## Roadmap
 
