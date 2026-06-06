@@ -16,13 +16,24 @@ EXPECTED_SPEC_SECTIONS: Final[Tuple[str, ...]] = (
     "Open Questions",
 )
 
-# Match level-2 ATX headings per CommonMark: up to 3 spaces of indent, the ``##``
-# marker, and an optional closing run of ``#`` characters preceded by whitespace.
+# Match a level-2 ATX heading per CommonMark §4.2 and capture the heading text.
+# Pattern breakdown:
+#   ^ {0,3}             up to three spaces of indent (four spaces becomes a code
+#                       block, so deeper indents must not match);
+#   ##                  the opening level-2 marker;
+#   [ \t]+              at least one space or tab between the marker and content
+#                       (``##Goal`` is not a heading per spec);
+#   (.+?)               the heading text, captured non-greedily so the optional
+#                       closing run can claim its trailing hashes;
+#   (?:[ \t]+#+[ \t]*)? optional closing run of ``#`` characters that must be
+#                       preceded by whitespace and may be followed by trailing
+#                       spaces/tabs only (so ``## Goal ##`` resolves to ``Goal``).
 _HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^ {0,3}##[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$"
 )
 
-# Match the opening of a fenced code block; the captured run drives close detection.
+# Match the opening of a fenced code block; the captured run drives close
+# detection so a ``~~~~`` open is not closed by a shorter ``~~~`` run.
 _FENCE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*(`{3,}|~{3,})")
 
 
