@@ -43,7 +43,7 @@ The filesystem scanning logic is split into typed modules:
 - `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic.
 - `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI and parses Markdown spec sections.
 
-The Markdown section parser extracts the body of each expected `##` heading from a spec file and returns a `dict[str, str | None]` keyed by the expected section names: `Goal`, `Context`, `Acceptance Criteria`, `Risks`, `Open Questions`. Missing or empty sections collapse to `None`. Sample inputs live in `examples/good_spec.md` and `examples/weak_spec.md`.
+The Markdown section parser extracts the body of each expected `##` heading from a spec file and returns a `dict[str, str | None]` keyed by the expected section names: `Goal`, `Context`, `Acceptance Criteria`, `Risks`, `Open Questions`. Missing or empty sections collapse to `None`. Headings follow CommonMark ATX rules (up to three spaces of indent, an optional closing run of `#`s), and `##` lines that appear inside fenced code blocks are ignored. Sample inputs live in `examples/good_spec.md` and `examples/weak_spec.md`.
 
 The source tree is checked with `mypy` in strict mode.
 
