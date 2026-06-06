@@ -16,8 +16,11 @@ EXPECTED_SPEC_SECTIONS: Final[Tuple[str, ...]] = (
     "Open Questions",
 )
 
-# Match level-2 Markdown headings; capture the heading text without the prefix.
-_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^##\s+(.+?)\s*$")
+# Match level-2 ATX headings per CommonMark: up to 3 spaces of indent, the ``##``
+# marker, and an optional closing run of ``#`` characters preceded by whitespace.
+_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^ {0,3}##[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$"
+)
 
 # Match the opening of a fenced code block; the captured run drives close detection.
 _FENCE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*(`{3,}|~{3,})")
