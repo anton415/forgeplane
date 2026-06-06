@@ -17,7 +17,10 @@ EXPECTED_SPEC_SECTIONS: Final[Tuple[str, ...]] = (
 )
 
 # Match level-2 Markdown headings; capture the heading text without the prefix.
-_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^##\s+(.+?)\s*$")
+
+# Match the opening of a fenced code block; the captured run drives close detection.
+_FENCE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*(`{3,}|~{3,})")
 
 
 class ScanReport(TypedDict):
@@ -88,14 +91,45 @@ def scan_docs(path: Path) -> ScanReport:
 
 def parse_sections(text: str) -> Dict[str, Optional[str]]:
     """Return body text for each expected spec section, or None when missing."""
-    # Walk all ## headings so any unexpected one still terminates the previous block.
-    matches = list(_HEADING_PATTERN.finditer(text))
     bodies: Dict[str, str] = {}
-    for index, match in enumerate(matches):
-        name = match.group(1).strip()
-        start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        bodies[name] = text[start:end].strip()
+    current_name: Optional[str] = None
+    current_lines: List[str] = []
+    # Track fenced code blocks so a ``## Context`` line inside ``` ... ``` is not
+    # mistaken for a real section boundary.
+    fence_marker: Optional[str] = None
+
+    for line in text.splitlines():
+        if fence_marker is None:
+            fence_open = _FENCE_PATTERN.match(line)
+            if fence_open is not None:
+                fence_marker = fence_open.group(1)
+                if current_name is not None:
+                    current_lines.append(line)
+                continue
+
+            heading = _HEADING_PATTERN.match(line)
+            if heading is not None:
+                if current_name is not None:
+                    bodies[current_name] = "\n".join(current_lines).strip()
+                current_name = heading.group(1).strip()
+                current_lines = []
+                continue
+
+            if current_name is not None:
+                current_lines.append(line)
+            continue
+
+        # Inside a fence: keep the content verbatim and look for the matching close.
+        if current_name is not None:
+            current_lines.append(line)
+        fence_close = _FENCE_PATTERN.match(line)
+        if fence_close is not None and fence_close.group(1)[0] == fence_marker[0] and len(
+            fence_close.group(1)
+        ) >= len(fence_marker):
+            fence_marker = None
+
+    if current_name is not None:
+        bodies[current_name] = "\n".join(current_lines).strip()
 
     # Empty bodies collapse to None so downstream readiness checks treat them as missing.
     return {section: (bodies.get(section) or None) for section in EXPECTED_SPEC_SECTIONS}
