@@ -51,6 +51,47 @@ def test_short_acceptance_criteria_is_flagged(
     assert good_ac is not None and len(good_ac) >= ACCEPTANCE_CRITERIA_MIN_LENGTH
 
 
+def test_atx_heading_variants_resolve_to_expected_names(parse: SectionParser) -> None:
+    # CommonMark allows up to three spaces of indent and an optional closing
+    # run of ``#`` characters; both must still map to the canonical section key.
+    spec = (
+        "## Goal ##\n"
+        "goal body\n"
+        "   ## Context\n"
+        "context body\n"
+        "  ## Acceptance Criteria  ##\n"
+        "ac body\n"
+        "## Risks #\n"
+        "risk body\n"
+        "## Open Questions\n"
+        "oq body\n"
+    )
+    parsed = parse(spec)
+    assert parsed["Goal"] == "goal body"
+    assert parsed["Context"] == "context body"
+    assert parsed["Acceptance Criteria"] == "ac body"
+    assert parsed["Risks"] == "risk body"
+    assert parsed["Open Questions"] == "oq body"
+
+
+def test_invalid_atx_forms_are_not_treated_as_headings(parse: SectionParser) -> None:
+    # Four or more spaces of indent become a code block; ``##Goal`` lacks the
+    # required separator. Neither should populate the Goal section.
+    spec = (
+        "## Context\n"
+        "context body\n"
+        "    ## Goal\n"
+        "indented body\n"
+        "##Goal\n"
+        "no-space body\n"
+    )
+    parsed = parse(spec)
+    assert parsed["Goal"] is None
+    assert parsed["Context"] is not None
+    assert "indented body" in parsed["Context"]
+    assert "no-space body" in parsed["Context"]
+
+
 def test_fenced_heading_does_not_split_section(parse: SectionParser) -> None:
     # Regression: a ``## Context`` line inside a fenced block must stay under Goal.
     spec = (
