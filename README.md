@@ -44,6 +44,7 @@ The codebase also includes early Pydantic schemas for API readiness checks:
 
 The filesystem scanning logic is split into typed modules:
 
+- `core/files.py` — recursively discovers Markdown spec files and exposes a typed UTF-8 read helper used by the spec scanners.
 - `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic.
 - `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI and parses Markdown spec sections.
 
@@ -144,6 +145,9 @@ forgeplane/
 │       ├── __init__.py
 │       ├── cli.py
 │       ├── main.py
+│       ├── core/
+│       │   ├── __init__.py
+│       │   └── files.py
 │       └── specs/
 │           ├── __init__.py
 │           ├── files.py
@@ -151,6 +155,7 @@ forgeplane/
 │           └── schemas.py
 ├── tests/
 │   ├── conftest.py
+│   ├── test_files.py
 │   └── test_scanner.py
 ├── examples/
 │   ├── good_spec.md
@@ -198,7 +203,7 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser.
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, and `test_scanner.py` covers the Markdown section parser.
 
 ## Roadmap
 
