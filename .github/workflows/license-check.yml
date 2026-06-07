@@ -38,7 +38,16 @@ jobs:
       - name: Print full license report
         run: uv run pip-licenses --format=markdown --with-urls --with-authors
 
+      # --partial-match enables case-insensitive substring matching so this
+      # short list catches every GPL/AGPL/LGPL form: pip-licenses long output
+      # ("GNU General Public License v3 ..."), modern SPDX identifiers
+      # ("GPL-3.0-only", "AGPL-3.0-or-later", "LGPL-2.1-only"), and concise
+      # forms ("GPLv2", "GPLv3"). Three tokens are enough:
+      #   - "General Public License" — every long-form GPL/LGPL/AGPL variant;
+      #   - "GPL-"                   — every SPDX dash-form, since "AGPL-"
+      #                                and "LGPL-" both contain "GPL-";
+      #   - "GPLv"                   — concise GPLv2 / GPLv3 short forms.
       - name: Fail on strict copyleft licenses (GPL / AGPL / LGPL)
         run: >
-          uv run pip-licenses --fail-on
-          "GNU General Public License (GPL);GNU General Public License v2 (GPLv2);GNU General Public License v3 (GPLv3);GNU General Public License v2 or later (GPLv2+);GNU General Public License v3 or later (GPLv3+);GNU Affero General Public License v3;GNU Affero General Public License v3 or later (AGPLv3+);GNU Lesser General Public License v2 (LGPLv2);GNU Lesser General Public License v2 or later (LGPLv2+);GNU Lesser General Public License v3 (LGPLv3);GNU Lesser General Public License v3 or later (LGPLv3+)"
+          uv run pip-licenses --partial-match --fail-on
+          "General Public License;GPL-;GPLv"
