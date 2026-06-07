@@ -1,3 +1,6 @@
+# Copyright 2026 Anton Serdyuchenko
+# SPDX-License-Identifier: Apache-2.0
+
 """Command-line interface for Forgeplane.
 
 This module defines the Typer app, CLI commands, and helper functions used to

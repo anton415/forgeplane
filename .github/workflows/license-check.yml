@@ -1,0 +1,53 @@
+# Verifies that no dependency uses a strict copyleft license incompatible with
+# Apache 2.0 distribution. Prints the full license table for visibility, then
+# fails the job if any GPL/AGPL/LGPL-family license is found.
+name: License check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  license-check:
+    name: Check dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Sync project dependencies (locked)
+        run: uv sync --frozen
+
+      - name: Install pip-licenses into project venv
+        run: uv pip install pip-licenses
+
+      - name: Print full license report
+        run: uv run pip-licenses --format=markdown --with-urls --with-authors
+
+      # --partial-match enables case-insensitive substring matching so this
+      # short list catches every GPL/AGPL/LGPL form: pip-licenses long output
+      # ("GNU General Public License v3 ..."), modern SPDX identifiers
+      # ("GPL-3.0-only", "AGPL-3.0-or-later", "LGPL-2.1-only"), and concise
+      # forms ("GPLv2", "GPLv3"). Three tokens are enough:
+      #   - "General Public License" — every long-form GPL/LGPL/AGPL variant;
+      #   - "GPL-"                   — every SPDX dash-form, since "AGPL-"
+      #                                and "LGPL-" both contain "GPL-";
+      #   - "GPLv"                   — concise GPLv2 / GPLv3 short forms.
+      - name: Fail on strict copyleft licenses (GPL / AGPL / LGPL)
+        run: >
+          uv run pip-licenses --partial-match --fail-on
+          "General Public License;GPL-;GPLv"

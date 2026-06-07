@@ -1,3 +1,6 @@
+# Copyright 2026 Anton Serdyuchenko
+# SPDX-License-Identifier: Apache-2.0
+
 """Typed scanner for API documentation directories."""
 
 import re
