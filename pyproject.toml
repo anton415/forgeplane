@@ -56,12 +56,23 @@ packages = ["src/forgeplane"]
 [tool.mypy]
 strict = true
 
+# Ruff owns formatting plus fast static linting before mypy runs.
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# Typer does not yet unwrap PEP 695 type aliases at runtime, so keep TypeAlias.
+ignore = ["UP040"]
+
 # Development-only tools used for local checks and CI.
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",
     "pytest>=8.4.0",
     "pytest-cov>=7.1.0",
+    "ruff>=0.15.16",
     "types-pyyaml>=6.0.12.20260518",
 ]
 

@@ -6,12 +6,12 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Final, List, Optional, Tuple, TypedDict
+from typing import Final, TypedDict
 
 from forgeplane.specs.files import FileEntry, collect_files
 
 # Spec sections we expect every Forgeplane-managed Markdown spec to contain.
-EXPECTED_SPEC_SECTIONS: Final[Tuple[str, ...]] = (
+EXPECTED_SPEC_SECTIONS: Final[tuple[str, ...]] = (
     "Goal",
     "Context",
     "Acceptance Criteria",
@@ -49,7 +49,7 @@ class ScanReport(TypedDict):
     files_count: int
     total_size_bytes: int
     extensions: dict[str, int]
-    files: List[str]
+    files: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +59,7 @@ class ScanSummary:
     # The summary keeps Path and FileEntry objects while scanning is still in
     # Python space; to_report converts them to plain serializable values.
     path: Path
-    files: List[FileEntry]
+    files: list[FileEntry]
     total_size_bytes: int
     extensions: dict[str, int]
 
@@ -73,14 +73,14 @@ class ScanSummary:
         }
 
 
-def extension_label(extension: Optional[str]) -> str:
+def extension_label(extension: str | None) -> str:
     # Files without suffixes are grouped under a stable report key.
     if extension is None:
         return "no_extension"
     return extension
 
 
-def build_scan_summary(path: Path, files: Optional[List[FileEntry]] = None) -> ScanSummary:
+def build_scan_summary(path: Path, files: list[FileEntry] | None = None) -> ScanSummary:
     # Passing files is useful for tests or future scanners that already have
     # collected FileEntry objects; otherwise the directory is scanned here.
     file_entries = collect_files(path) if files is None else files
@@ -106,14 +106,14 @@ def scan_docs(path: Path) -> ScanReport:
     return build_scan_summary(path).to_report()
 
 
-def parse_sections(text: str) -> Dict[str, Optional[str]]:
+def parse_sections(text: str) -> dict[str, str | None]:
     """Return body text for each expected spec section, or None when missing."""
-    bodies: Dict[str, str] = {}
-    current_name: Optional[str] = None
-    current_lines: List[str] = []
+    bodies: dict[str, str] = {}
+    current_name: str | None = None
+    current_lines: list[str] = []
     # Track fenced code blocks so a ``## Context`` line inside ``` ... ``` is not
     # mistaken for a real section boundary.
-    fence_marker: Optional[str] = None
+    fence_marker: str | None = None
 
     for line in text.splitlines():
         if fence_marker is None:
@@ -140,18 +140,23 @@ def parse_sections(text: str) -> Dict[str, Optional[str]]:
         if current_name is not None:
             current_lines.append(line)
         fence_close = _FENCE_PATTERN.match(line)
-        if fence_close is not None and fence_close.group(1)[0] == fence_marker[0] and len(
-            fence_close.group(1)
-        ) >= len(fence_marker):
+        if (
+            fence_close is not None
+            and fence_close.group(1)[0] == fence_marker[0]
+            and len(fence_close.group(1)) >= len(fence_marker)
+        ):
             fence_marker = None
 
     if current_name is not None:
         bodies[current_name] = "\n".join(current_lines).strip()
 
-    # Empty bodies collapse to None so downstream readiness checks treat them as missing.
-    return {section: (bodies.get(section) or None) for section in EXPECTED_SPEC_SECTIONS}
+    # Empty bodies collapse to None so downstream readiness checks treat them
+    # as missing.
+    return {
+        section: (bodies.get(section) or None) for section in EXPECTED_SPEC_SECTIONS
+    }
 
 
-def parse_spec_file(path: Path) -> Dict[str, Optional[str]]:
+def parse_spec_file(path: Path) -> dict[str, str | None]:
     """Read a Markdown spec from disk and parse its expected sections."""
     return parse_sections(path.read_text(encoding="utf-8"))

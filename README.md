@@ -162,6 +162,7 @@ forgeplane/
 ├── examples/
 │   ├── good_spec.md
 │   └── weak_spec.md
+├── Makefile
 ├── main.py
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
@@ -191,6 +192,23 @@ Run a scan against a documentation directory:
 
 ```bash
 uv run forgeplane scan path/to/docs
+```
+
+Run the full local lint gate:
+
+```bash
+make lint
+```
+
+`make lint` checks Ruff formatting, runs Ruff lint rules, and then runs strict
+`mypy` against `src/`. Ruff is configured in `pyproject.toml` for Python 3.13,
+import sorting, pyupgrade rules, bugbear checks, and safe simplifications.
+
+Run Ruff directly:
+
+```bash
+uv run ruff check .
+uv run ruff format .
 ```
 
 Run strict type checking:

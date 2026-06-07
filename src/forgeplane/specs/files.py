@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, TypedDict
+from typing import TypedDict
 
 
 class FileRecord(TypedDict):
@@ -13,7 +13,7 @@ class FileRecord(TypedDict):
 
     # This record uses only plain values so it can be emitted as JSON/YAML.
     path: str
-    extension: Optional[str]
+    extension: str | None
     size_bytes: int
 
 
@@ -24,7 +24,7 @@ class FileEntry:
     # Keep the original Path for internal use and a relative string for reports.
     path: Path
     relative_path: str
-    extension: Optional[str]
+    extension: str | None
     size_bytes: int
 
     def to_record(self) -> FileRecord:
@@ -36,7 +36,7 @@ class FileEntry:
         }
 
 
-def file_extension(path: Path) -> Optional[str]:
+def file_extension(path: Path) -> str | None:
     suffix = path.suffix.lower()
     # Returning None lets scanner.py decide how extensionless files are labeled.
     if suffix == "":
@@ -59,8 +59,8 @@ def build_file_entry(root: Path, path: Path) -> FileEntry:
     )
 
 
-def collect_files(path: Path) -> List[FileEntry]:
-    entries: List[FileEntry] = []
+def collect_files(path: Path) -> list[FileEntry]:
+    entries: list[FileEntry] = []
 
     # rglob walks the full tree; directories are skipped so reports only include
     # actual files.
