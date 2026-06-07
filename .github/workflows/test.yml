@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Anton Serdyuchenko
+#
+# Runs the pytest suite and collects coverage on every push to main and every
+# pull request, so the parser-backed tests in tests/ are exercised against the
+# locked dependency set before any change merges. Coverage data is uploaded to
+# Codecov for the README badge and the PR comment that flags regressions.
+
+# Display name shown in the GitHub Actions UI and PR check list.
+name: Tests
+
+# Triggers: pull_request runs the suite before merge, push to main re-runs it
+# so the badge always reflects main HEAD, and workflow_dispatch enables manual
+# reruns from the Actions tab when investigating a flake.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Default to read-only access for any job in this workflow. Jobs that need
+# more (the pytest job below needs id-token: write for Codecov OIDC) raise
+# permissions explicitly at the job level so the scope is visible and narrow.
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    # Display name for this job in the Checks UI.
+    name: Run pytest
+    runs-on: ubuntu-latest
+    # id-token: write is required for tokenless Codecov upload via OIDC.
+    # contents: read is re-declared here because job-level permissions
+    # replace (not merge with) the workflow-level block above.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # Pull repo content into the runner workspace at $GITHUB_WORKSPACE.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install the uv package manager. enable-cache keeps the uv download
+      # cache between runs so dependency installs are fast on warm runners.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # Match the Python version pinned in pyproject.toml (requires-python).
+      # Bumping the project's minimum version means bumping this line too.
+      - name: Set up Python
+        run: uv python install 3.13
+
+      # --frozen forces the runner to install the exact versions pinned in
+      # uv.lock, so CI sees the same dep tree as local dev. Dev deps (pytest,
+      # pytest-cov) install by default because they live in the "dev" group.
+      - name: Sync project dependencies (locked)
+        run: uv sync --frozen
+
+      # -v prints each test name (matches the local command in the README);
+      # --cov=forgeplane measures coverage of the package under src/;
+      # --cov-report=xml writes coverage.xml for the Codecov upload below;
+      # --cov-report=term-missing prints the uncovered lines in the job log.
+      - name: Run pytest with coverage
+        run: uv run pytest -v --cov=forgeplane --cov-report=xml --cov-report=term-missing
+
+      # Upload coverage.xml to Codecov. use_oidc + id-token: write on the job
+      # together enable tokenless upload on public repos, so no CODECOV_TOKEN
+      # secret is needed. fail_ci_if_error stays false so a Codecov outage
+      # doesn't fail merges — the test result above gates merge, not the
+      # coverage upload.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          files: ./coverage.xml
+          fail_ci_if_error: false

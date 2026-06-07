@@ -1,5 +1,7 @@
 # Forgeplane
 
+[![Tests](https://github.com/anton415/forgeplane/actions/workflows/test.yml/badge.svg)](https://github.com/anton415/forgeplane/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/anton415/forgeplane/graph/badge.svg)](https://codecov.io/gh/anton415/forgeplane)
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 ![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)
@@ -213,8 +215,6 @@ Planned directions:
 - Add checks for OpenAPI files.
 - Implement real API specification generation.
 - Support richer reports for API readiness.
-- Add tests.
-- Add CI.
 - Add examples for real-world API documentation.
 - Expand contribution guidelines as the project matures.
 - Publish package metadata and release process.
