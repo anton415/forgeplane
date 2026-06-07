@@ -19,9 +19,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Principle of least privilege: the job only reads the repo. Codecov upload
-# uses OIDC, not a write token. Raise permissions per-job (not workflow-wide)
-# if a future job needs write access (release tag, badge commit, etc.).
+# Default to read-only access for any job in this workflow. Jobs that need
+# more (the pytest job below needs id-token: write for Codecov OIDC) raise
+# permissions explicitly at the job level so the scope is visible and narrow.
 permissions:
   contents: read
 
@@ -30,6 +30,12 @@ jobs:
     # Display name for this job in the Checks UI.
     name: Run pytest
     runs-on: ubuntu-latest
+    # id-token: write is required for tokenless Codecov upload via OIDC.
+    # contents: read is re-declared here because job-level permissions
+    # replace (not merge with) the workflow-level block above.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       # Pull repo content into the runner workspace at $GITHUB_WORKSPACE.
       - name: Checkout repository
@@ -60,11 +66,14 @@ jobs:
       - name: Run pytest with coverage
         run: uv run pytest -v --cov=forgeplane --cov-report=xml --cov-report=term-missing
 
-      # Upload coverage.xml to Codecov. Public repos use OIDC tokenless upload.
-      # fail_ci_if_error stays false so a Codecov outage doesn't fail merges —
-      # the test result above is what gates merge, not the coverage upload.
+      # Upload coverage.xml to Codecov. use_oidc + id-token: write on the job
+      # together enable tokenless upload on public repos, so no CODECOV_TOKEN
+      # secret is needed. fail_ci_if_error stays false so a Codecov outage
+      # doesn't fail merges — the test result above gates merge, not the
+      # coverage upload.
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
+          use_oidc: true
           files: ./coverage.xml
           fail_ci_if_error: false
