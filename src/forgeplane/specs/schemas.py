@@ -7,7 +7,6 @@ from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
-
 # Readiness is intentionally limited to stable report states that downstream
 # tools can branch on without parsing free-form text.
 Readiness: TypeAlias = Literal["ready", "partial", "not_ready"]

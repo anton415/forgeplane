@@ -4,10 +4,9 @@
 """Markdown discovery and read helpers for spec scans."""
 
 from pathlib import Path
-from typing import List
 
 
-def find_markdown_files(root: Path) -> List[Path]:
+def find_markdown_files(root: Path) -> list[Path]:
     """Return every ``.md`` file under ``root``, sorted for deterministic output."""
     # is_file() drops directories named ``*.md`` and broken symlinks so callers
     # can safely read every returned path without an extra guard.

@@ -7,9 +7,9 @@ This module defines the Typer app, CLI commands, and helper functions used to
 scan documentation folders and print reports in different formats.
 """
 
+import json
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
-import json
 
 import typer
 import yaml
@@ -37,10 +37,11 @@ def print_text_report(report: ScanReport) -> None:
 
     table.add_row("Path", report["path"])
     table.add_row("Files", str(report["files_count"]))
-    table.add_row("Total size", f'{report["total_size_bytes"]} bytes')
+    table.add_row("Total size", f"{report['total_size_bytes']} bytes")
     table.add_row(
         "Extensions",
-        ", ".join(f"{ext}: {count}" for ext, count in report["extensions"].items()) or "none",
+        ", ".join(f"{ext}: {count}" for ext, count in report["extensions"].items())
+        or "none",
     )
 
     console.print(table)

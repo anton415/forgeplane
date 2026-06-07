@@ -3,25 +3,29 @@
 
 """Tests for the Markdown spec section parser."""
 
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
 from forgeplane.specs.scanner import EXPECTED_SPEC_SECTIONS
 
 # Callable signature exposed by the ``parse`` fixture in conftest.
-SectionParser = Callable[[str], Dict[str, Optional[str]]]
+SectionParser = Callable[[str], dict[str, str | None]]
 
 
 # Threshold used by the readiness check for the Acceptance Criteria section.
 ACCEPTANCE_CRITERIA_MIN_LENGTH = 80
 
 
-def test_complete_spec_has_every_section(good_spec_sections: Dict[str, Optional[str]]) -> None:
+def test_complete_spec_has_every_section(
+    good_spec_sections: dict[str, str | None],
+) -> None:
     # A fully populated spec produces a non-empty body for every expected section.
     for section in EXPECTED_SPEC_SECTIONS:
         assert good_spec_sections[section], f"{section} should be populated"
 
 
-def test_missing_sections_collapse_to_none(weak_spec_sections: Dict[str, Optional[str]]) -> None:
+def test_missing_sections_collapse_to_none(
+    weak_spec_sections: dict[str, str | None],
+) -> None:
     # Sections omitted from the file must surface as None, not empty strings.
     assert weak_spec_sections["Context"] is None
     assert weak_spec_sections["Risks"] is None
@@ -36,7 +40,7 @@ def test_empty_file_returns_all_none(parse: SectionParser) -> None:
     assert all(value is None for value in parsed.values())
 
 
-def test_todos_found_in_section_body(weak_spec_sections: Dict[str, Optional[str]]) -> None:
+def test_todos_found_in_section_body(weak_spec_sections: dict[str, str | None]) -> None:
     # Detecting TODO markers is the first signal of weak content.
     acceptance = weak_spec_sections["Acceptance Criteria"]
     assert acceptance is not None
@@ -44,8 +48,8 @@ def test_todos_found_in_section_body(weak_spec_sections: Dict[str, Optional[str]
 
 
 def test_short_acceptance_criteria_is_flagged(
-    weak_spec_sections: Dict[str, Optional[str]],
-    good_spec_sections: Dict[str, Optional[str]],
+    weak_spec_sections: dict[str, str | None],
+    good_spec_sections: dict[str, str | None],
 ) -> None:
     # The weak spec ships with a one-liner AC, the good spec with a full checklist.
     weak_ac = weak_spec_sections["Acceptance Criteria"]
@@ -81,12 +85,7 @@ def test_invalid_atx_forms_are_not_treated_as_headings(parse: SectionParser) -> 
     # Four or more spaces of indent become a code block; ``##Goal`` lacks the
     # required separator. Neither should populate the Goal section.
     spec = (
-        "## Context\n"
-        "context body\n"
-        "    ## Goal\n"
-        "indented body\n"
-        "##Goal\n"
-        "no-space body\n"
+        "## Context\ncontext body\n    ## Goal\nindented body\n##Goal\nno-space body\n"
     )
     parsed = parse(spec)
     assert parsed["Goal"] is None
