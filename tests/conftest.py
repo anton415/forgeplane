@@ -1,3 +1,6 @@
+# Copyright 2026 Anton Serdyuchenko
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared pytest fixtures backed by the spec section parser."""
 
 from pathlib import Path

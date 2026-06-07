@@ -1,3 +1,6 @@
+# Copyright 2026 Anton Serdyuchenko
+# SPDX-License-Identifier: Apache-2.0
+
 """Module entry point for running Forgeplane as a Python module."""
 
 # Import the Typer application object that defines all CLI commands.

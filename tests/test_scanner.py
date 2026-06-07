@@ -1,3 +1,6 @@
+# Copyright 2026 Anton Serdyuchenko
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the Markdown spec section parser."""
 
 from typing import Callable, Dict, Optional
