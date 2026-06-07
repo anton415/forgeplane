@@ -61,9 +61,29 @@ strict = true
 dev = [
     "mypy>=2.1.0",
     "pytest>=8.4.0",
+    "pytest-cov>=7.1.0",
     "types-pyyaml>=6.0.12.20260518",
 ]
 
 # Run pytest against the tests/ directory by default.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Coverage is measured for the forgeplane package only so the reported
+# percentage reflects library code, not the test suite itself. branch = true
+# also tracks which side of every if/else fires, which catches dead arms that
+# line coverage alone would miss.
+[tool.coverage.run]
+source = ["src/forgeplane"]
+branch = true
+
+# Lines matching these patterns are excluded from the coverage report: the
+# explicit ``pragma: no cover`` opt-out, stubs that raise NotImplementedError,
+# and TYPE_CHECKING blocks that only run during static analysis.
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+show_missing = true
