@@ -1,5 +1,9 @@
 # Forgeplane
 
+[![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)
+
 Forgeplane is an early-stage CLI tool for working with API specifications and documentation.
 
 The project is intended to help developers analyze API documentation, generate or prepare API specifications, and gradually move toward a more structured, specification-driven engineering workflow.
@@ -152,8 +156,11 @@ forgeplane/
 │   ├── good_spec.md
 │   └── weak_spec.md
 ├── main.py
+├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
 ├── LICENSE
+├── NOTICE
+├── SECURITY.md
 ├── pyproject.toml
 ├── uv.lock
 └── README.md
@@ -232,10 +239,14 @@ Good first contribution areas:
 
 Before submitting larger changes, open an issue describing the proposed direction.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup and contribution licensing.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup and contribution licensing, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community guidelines.
+
+## Security
+
+To report a security vulnerability privately, please follow the process in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Forgeplane is licensed under the Apache License 2.0.
+Forgeplane is licensed under the [Apache License 2.0](LICENSE). See the [NOTICE](NOTICE) file for attribution requirements.
 
 Copyright 2026 Anton Serdyuchenko.
