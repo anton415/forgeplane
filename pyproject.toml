@@ -5,7 +5,23 @@ version = "0.1.0"
 description = "CLI tool for generating API specs"
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.13"
+authors = [
+    { name = "Anton Serdyuchenko", email = "anton415@gmail.com" },
+]
+keywords = ["api", "openapi", "specification", "cli", "documentation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 
 # Runtime dependencies needed by the Forgeplane CLI.
 dependencies = [
@@ -16,6 +32,12 @@ dependencies = [
     "rich>=15.0.0",
     "typer>=0.26.2",
 ]
+
+# Project URLs surfaced on PyPI and other package indexes.
+[project.urls]
+Homepage = "https://github.com/anton415/forgeplane"
+Repository = "https://github.com/anton415/forgeplane"
+Issues = "https://github.com/anton415/forgeplane/issues"
 
 # Console entry point installed as the `forgeplane` command.
 [project.scripts]
