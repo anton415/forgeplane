@@ -16,6 +16,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
+from forgeplane.core.config import configure_logging
 from forgeplane.specs.scanner import ScanReport, scan_docs
 
 # Typer uses this object to collect commands and expose them as a CLI.
@@ -99,9 +100,27 @@ def scan(
             help="Report format: json, text, or yaml",
         ),
     ] = "text",
+    # --verbose lifts the Forgeplane logger to DEBUG for the current run so
+    # users can trace every scan step without editing .env.
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Log scan steps at DEBUG level using a rich handler.",
+        ),
+    ] = False,
 ) -> None:
     """Scan a documentation directory and print a report."""
+    logger = configure_logging(verbose=verbose)
+    logger.info("Scanning directory: %s", path)
     report = scan_docs(path)
+    logger.debug(
+        "Discovered %d file(s); total size %d bytes",
+        report["files_count"],
+        report["total_size_bytes"],
+    )
+    logger.debug("Rendering report in %s format", output_format)
 
     # The same report can be rendered in different formats.
     if output_format == "json":
