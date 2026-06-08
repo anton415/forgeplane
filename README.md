@@ -31,13 +31,14 @@ The `scan` command reports:
 - number of files;
 - total file size;
 - file extensions distribution;
-- relative file list.
+- relative file list;
+- per-`.md` readiness results (score, missing sections, weak sections, TODO findings, and a readiness label).
 
 Output formats:
 
-- `text`
-- `json`
-- `yaml`
+- `text` — human-friendly tables rendered through [`rich`](https://rich.readthedocs.io/), including a per-file readiness table with green/yellow/red colour coding and a transient progress bar while specs are scored.
+- `json` — machine-readable payload that includes the `results` array with one entry per scanned `.md` file.
+- `yaml` — same payload as `json`, formatted for documentation workflows.
 
 The codebase also includes early Pydantic schemas for API readiness checks:
 
@@ -119,7 +120,27 @@ the same styling as the rest of the CLI output.
 forgeplane scan path/to/docs
 ```
 
-Text output is used by default.
+Text output is used by default. While the command processes Markdown specs,
+`rich.progress` shows a spinner with the current file count and elapsed time.
+Once scoring is finished, two tables are printed: a directory summary and a
+readiness table with the columns **File**, **Score**, **Missing**, and
+**Readiness**.
+
+Colour coding follows the readiness thresholds:
+
+- **green** — score ≥ 80, readiness `ready`;
+- **yellow** — score ≥ 60, readiness `partial`;
+- **red** — score < 60, readiness `not_ready`.
+
+A reproducible SVG snapshot of the report against the bundled examples lives
+at [`docs/reports/scan_report.svg`](docs/reports/scan_report.svg) and can be
+regenerated with:
+
+```bash
+uv run python scripts/generate_report_artifact.py
+```
+
+![Forgeplane scan report](docs/reports/scan_report.svg)
 
 ### Verbose logging
 
@@ -170,9 +191,23 @@ Example output:
   "files": [
     "api.md",
     "openapi.yaml"
+  ],
+  "results": [
+    {
+      "file": "api.md",
+      "score": 80,
+      "missing": [],
+      "weak": ["Open Questions"],
+      "todos_found": [],
+      "readiness": "ready"
+    }
   ]
 }
 ```
+
+The `results` array contains one entry per discovered `.md` file. Each entry
+is the JSON form of the `ScanResult` Pydantic model defined in
+`forgeplane/specs/schemas.py`.
 
 ## Project structure
 
@@ -194,12 +229,19 @@ forgeplane/
 │           └── schemas.py
 ├── tests/
 │   ├── conftest.py
+│   ├── test_cli_rich.py
 │   ├── test_config.py
 │   ├── test_files.py
-│   └── test_scanner.py
+│   ├── test_scanner.py
+│   └── test_scoring.py
 ├── examples/
 │   ├── good_spec.md
 │   └── weak_spec.md
+├── scripts/
+│   └── generate_report_artifact.py
+├── docs/
+│   └── reports/
+│       └── scan_report.svg
 ├── .env.example
 ├── Makefile
 ├── main.py
@@ -262,7 +304,7 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, and `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag.
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, and `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, and the JSON `results` field).
 
 ## Roadmap
 
