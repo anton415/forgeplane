@@ -175,7 +175,13 @@ def build_scan_summary(path: Path, files: list[FileEntry] | None = None) -> Scan
 
 
 def scan_docs(path: Path) -> ScanReport:
-    return build_scan_summary(path).to_report()
+    # Score every discovered Markdown spec so the public scanner entry point
+    # honours the ``ScanReport.results`` contract for direct API callers.
+    # Without this, only the CLI (which scores results itself) would populate
+    # the readiness data; library users would always see ``results == []``.
+    summary = build_scan_summary(path)
+    results = [score_spec_file(entry) for entry in markdown_entries(summary)]
+    return summary.to_report(results=results)
 
 
 def parse_sections(text: str) -> dict[str, str | None]:

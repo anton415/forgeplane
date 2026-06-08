@@ -13,6 +13,7 @@ from forgeplane.specs.scanner import (
     build_scan_summary,
     classify_readiness,
     markdown_entries,
+    scan_docs,
     score_sections,
     score_spec_file,
 )
@@ -107,3 +108,21 @@ def test_to_report_serialises_results(
     summary = build_scan_summary(Path("."), files=[])
     report = summary.to_report()
     assert report["results"] == []
+
+
+def test_scan_docs_populates_results_for_markdown_specs(tmp_path: Path) -> None:
+    # Regression guard: ``scan_docs`` is the library entry point used by
+    # callers that bypass the CLI. It must score every discovered ``.md``
+    # file so the ``ScanReport.results`` contract holds regardless of caller.
+    (tmp_path / "weak.md").write_text(
+        "## Goal\nTODO write the goal\n## Acceptance Criteria\nTODO\n",
+        encoding="utf-8",
+    )
+    report = scan_docs(tmp_path)
+    assert report["files_count"] == 1
+    assert len(report["results"]) == 1
+    record = report["results"][0]
+    assert record["file"] == "weak.md"
+    assert "Acceptance Criteria" in record["todos_found"]
+    # ``not_ready`` is expected for a spec built from two TODO placeholders.
+    assert record["readiness"] == "not_ready"
