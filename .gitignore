@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Local environment configuration (loaded by python-dotenv).
+.env
+.env.local
+
 # Test and coverage artifacts
 .pytest_cache/
 .coverage

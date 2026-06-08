@@ -4,8 +4,14 @@
 """Tests for the Markdown spec section parser."""
 
 from collections.abc import Callable
+from pathlib import Path
 
-from forgeplane.specs.scanner import EXPECTED_SPEC_SECTIONS
+from forgeplane.specs.files import FileEntry
+from forgeplane.specs.scanner import (
+    EXPECTED_SPEC_SECTIONS,
+    build_scan_summary,
+    extension_label,
+)
 
 # Callable signature exposed by the ``parse`` fixture in conftest.
 SectionParser = Callable[[str], dict[str, str | None]]
@@ -116,3 +122,36 @@ def test_fenced_heading_does_not_split_section(parse: SectionParser) -> None:
     assert "Goal continues." in goal
     assert "## Context\nnot a real heading" in goal
     assert parsed["Context"] == "Real context."
+
+
+def test_build_scan_summary_accepts_prebuilt_file_list(tmp_path: Path) -> None:
+    # Exercises the explicit-files branch of build_scan_summary, used by future
+    # scanners that already have FileEntry objects in hand. Also covers the
+    # extension-less aggregation path, where extension_label collapses to
+    # ``no_extension`` in the report.
+    entries = [
+        FileEntry(
+            path=tmp_path / "intro.md",
+            relative_path="intro.md",
+            extension=".md",
+            size_bytes=10,
+        ),
+        FileEntry(
+            path=tmp_path / "README",
+            relative_path="README",
+            extension=None,
+            size_bytes=5,
+        ),
+    ]
+    summary = build_scan_summary(tmp_path, files=entries)
+    report = summary.to_report()
+    assert report["files_count"] == 2
+    assert report["total_size_bytes"] == 15
+    assert report["extensions"] == {".md": 1, "no_extension": 1}
+    assert report["files"] == ["intro.md", "README"]
+
+
+def test_extension_label_handles_missing_suffix() -> None:
+    # Direct check on the labeling helper used by the aggregation loop.
+    assert extension_label(None) == "no_extension"
+    assert extension_label(".yaml") == ".yaml"

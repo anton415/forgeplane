@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, TypedDict
 
+from forgeplane.core.config import get_logger
 from forgeplane.specs.files import FileEntry, collect_files
+
+# Module-level logger so scan steps surface under --verbose without each
+# function re-deriving the namespace.
+_logger = get_logger(__name__)
 
 # Spec sections we expect every Forgeplane-managed Markdown spec to contain.
 EXPECTED_SPEC_SECTIONS: Final[tuple[str, ...]] = (
@@ -83,7 +88,11 @@ def extension_label(extension: str | None) -> str:
 def build_scan_summary(path: Path, files: list[FileEntry] | None = None) -> ScanSummary:
     # Passing files is useful for tests or future scanners that already have
     # collected FileEntry objects; otherwise the directory is scanned here.
-    file_entries = collect_files(path) if files is None else files
+    if files is None:
+        _logger.debug("Collecting files under %s", path)
+        file_entries = collect_files(path)
+    else:
+        file_entries = files
     extensions: dict[str, int] = {}
     total_size_bytes = 0
 
@@ -93,7 +102,13 @@ def build_scan_summary(path: Path, files: list[FileEntry] | None = None) -> Scan
         label = extension_label(file.extension)
         extensions[label] = extensions.get(label, 0) + 1
         total_size_bytes += file.size_bytes
+        _logger.debug(
+            "Indexed %s (%s, %d bytes)", file.relative_path, label, file.size_bytes
+        )
 
+    _logger.debug(
+        "Aggregated %d file(s) into scan summary for %s", len(file_entries), path
+    )
     return ScanSummary(
         path=path,
         files=file_entries,

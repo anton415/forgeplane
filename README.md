@@ -47,6 +47,7 @@ The codebase also includes early Pydantic schemas for API readiness checks:
 The filesystem scanning logic is split into typed modules:
 
 - `core/files.py` — recursively discovers Markdown spec files and exposes a typed UTF-8 read helper used by the spec scanners.
+- `core/config.py` — loads runtime settings (`OPENAI_API_KEY`, `LOG_LEVEL`) from `.env` via `python-dotenv` and configures the Forgeplane logger with a `rich` handler.
 - `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic.
 - `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI and parses Markdown spec sections.
 
@@ -84,6 +85,32 @@ pip install -e .
 forgeplane --help
 ```
 
+## Configuration
+
+Forgeplane loads runtime settings from a `.env` file in the current working
+directory via `python-dotenv`. Variables already set in the process
+environment take precedence over the file, which keeps CI configuration
+stable when a `.env` file is missing.
+
+Copy the bundled example to get started:
+
+```bash
+cp .env.example .env
+```
+
+Supported variables:
+
+- `OPENAI_API_KEY` — reserved for future LLM-backed commands (review, eval).
+  Leave empty until the LLM integration lands; Forgeplane never logs its
+  value.
+- `LOG_LEVEL` — threshold for the Forgeplane logger. One of `DEBUG`, `INFO`,
+  `WARNING`, `ERROR`, `CRITICAL`. Defaults to `INFO` when unset or
+  unrecognised. Pass `--verbose` on the CLI to force `DEBUG` for a single
+  command invocation.
+
+Logging is wired to `rich.logging.RichHandler`, so log records render with
+the same styling as the rest of the CLI output.
+
 ## Usage
 
 ### Scan documentation
@@ -93,6 +120,15 @@ forgeplane scan path/to/docs
 ```
 
 Text output is used by default.
+
+### Verbose logging
+
+Add `--verbose` (or `-v`) to log each scan step at `DEBUG` through a `rich`
+handler. The flag overrides `LOG_LEVEL` for the current invocation:
+
+```bash
+forgeplane scan path/to/docs --verbose
+```
 
 ### JSON output
 
@@ -149,6 +185,7 @@ forgeplane/
 │       ├── main.py
 │       ├── core/
 │       │   ├── __init__.py
+│       │   ├── config.py
 │       │   └── files.py
 │       └── specs/
 │           ├── __init__.py
@@ -157,11 +194,13 @@ forgeplane/
 │           └── schemas.py
 ├── tests/
 │   ├── conftest.py
+│   ├── test_config.py
 │   ├── test_files.py
 │   └── test_scanner.py
 ├── examples/
 │   ├── good_spec.md
 │   └── weak_spec.md
+├── .env.example
 ├── Makefile
 ├── main.py
 ├── CODE_OF_CONDUCT.md
@@ -223,7 +262,7 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, and `test_scanner.py` covers the Markdown section parser.
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, and `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag.
 
 ## Roadmap
 
