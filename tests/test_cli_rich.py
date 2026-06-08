@@ -224,11 +224,14 @@ def test_scan_saves_json_report_to_output_dir(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.stderr
     saved_files = sorted(reports_dir.glob("scan_*.json"))
     assert len(saved_files) == 1
-    saved_payload = json.loads(saved_files[0].read_text(encoding="utf-8"))
-    stdout_payload = json.loads(result.stdout)
-    # The saved file and stdout payload must be byte-equal once parsed; this
-    # is what guarantees CI jobs can pipe either source into the same checks.
-    assert saved_payload == stdout_payload
+    saved_text = saved_files[0].read_text(encoding="utf-8")
+    # Byte-identity (not just structural equality) is the stronger contract:
+    # a CI job can ``diff`` stdout against the archived file and expect a
+    # clean match. ``json.dumps`` omits the trailing newline, so the payload
+    # ends with exactly one ``\n`` in both sources.
+    assert saved_text == result.stdout
+    assert saved_text.endswith("\n")
+    saved_payload = json.loads(saved_text)
     assert saved_payload["files_count"] == 1
     assert saved_payload["results"][0]["file"] == "spec.md"
 
@@ -256,7 +259,12 @@ def test_scan_saves_yaml_report_to_output_dir(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.stderr
     saved_files = sorted(reports_dir.glob("scan_*.yaml"))
     assert len(saved_files) == 1
-    saved_payload = yaml.safe_load(saved_files[0].read_text(encoding="utf-8"))
+    saved_text = saved_files[0].read_text(encoding="utf-8")
+    # Same byte-identity contract as the JSON branch: ``yaml.safe_dump``
+    # already terminates with one ``\n`` and stdout must mirror that.
+    assert saved_text == result.stdout
+    assert saved_text.endswith("\n")
+    saved_payload = yaml.safe_load(saved_text)
     assert saved_payload["files_count"] == 1
     assert saved_payload["results"][0]["file"] == "spec.md"
 

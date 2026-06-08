@@ -149,20 +149,28 @@ def print_readiness_table(
 
 
 def _serialise_report(report: ScanReport, output_format: OutputFormat) -> str:
-    """Render the report payload as a string in the requested machine format."""
-    # Centralising the serialisation keeps the stdout branch and the on-disk
-    # save path byte-for-byte identical, so a CI job that diffs stdout against
-    # the saved file never sees a spurious mismatch.
+    """Render the report payload as a string in the requested machine format.
+
+    The returned string always ends with exactly one ``\n`` so the stdout
+    branch and the on-disk save path can emit byte-identical content. A CI
+    job that diffs the captured stdout against the archived file then sees
+    no spurious mismatch, regardless of whether the underlying serialiser
+    happened to append a trailing newline.
+    """
     if output_format == "json":
-        return json.dumps(report, ensure_ascii=False, indent=2)
-    if output_format == "yaml":
-        return yaml.safe_dump(report, allow_unicode=True, sort_keys=False)
-    # ``text`` is intentionally rejected here; both call sites gate on
-    # SERIALISABLE_FORMATS, so this branch is unreachable in normal use and
-    # exists only as a defensive guard for future call sites.
-    raise ValueError(  # pragma: no cover
-        f"Unsupported serialisable format: {output_format!r}"
-    )
+        body = json.dumps(report, ensure_ascii=False, indent=2)
+    elif output_format == "yaml":
+        body = yaml.safe_dump(report, allow_unicode=True, sort_keys=False)
+    else:
+        # ``text`` is intentionally rejected here; both call sites gate on
+        # SERIALISABLE_FORMATS, so this branch is unreachable in normal use
+        # and exists only as a defensive guard for future call sites.
+        raise ValueError(  # pragma: no cover
+            f"Unsupported serialisable format: {output_format!r}"
+        )
+    # ``json.dumps`` omits the trailing newline; ``yaml.safe_dump`` includes
+    # one. Normalise both so the payload ends with exactly one ``\n``.
+    return body.rstrip("\n") + "\n"
 
 
 def _build_report_filename(
@@ -199,14 +207,17 @@ def save_report(
 
 def _build_progress() -> Progress:
     # Spinner + bar + "n of m" + elapsed time produce a readable progress line
-    # without overwhelming narrow terminals.
+    # without overwhelming narrow terminals. The progress bar is visual
+    # feedback, not report data, so route it to stderr (alongside the rich
+    # log handler) and keep stdout reserved for the JSON/YAML payload that
+    # CI jobs pipe into jq or yq.
     return Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
-        console=console,
+        console=Console(stderr=True),
         transient=True,
     )
 
@@ -326,7 +337,10 @@ def scan(
         # JSON is useful for scripts and CI pipelines; YAML is friendlier in
         # documentation workflows. Both share the same serialised payload.
         payload = _serialise_report(report, output_format)
-        typer.echo(payload)
+        # ``nl=False`` keeps stdout byte-identical to the saved file: the
+        # payload already ends with a single ``\n`` from _serialise_report,
+        # and echo's default trailing newline would otherwise duplicate it.
+        typer.echo(payload, nl=False)
         if output_dir is not None:
             saved = save_report(report, output_dir, output_format)
             # Log to stderr (rich handler) so stdout stays a clean payload
