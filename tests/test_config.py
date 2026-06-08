@@ -3,6 +3,7 @@
 
 """Tests for environment loading and logger configuration."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -86,7 +87,11 @@ def test_configure_logging_uses_rich_handler(
     assert logger.name == LOGGER_NAME
     assert logger.level == logging.getLevelName(DEFAULT_LOG_LEVEL)
     assert len(logger.handlers) == 1
-    assert isinstance(logger.handlers[0], RichHandler)
+    handler = logger.handlers[0]
+    assert isinstance(handler, RichHandler)
+    # Records must land on stderr so machine-readable command output on stdout
+    # (json/yaml report formats) stays parseable.
+    assert handler.console.stderr is True
     # Propagation must be disabled so host applications do not double-log.
     assert logger.propagate is False
 
@@ -138,8 +143,46 @@ def test_scan_verbose_emits_debug_logs(
 
     runner = CliRunner()
     result = runner.invoke(app, ["scan", str(tmp_path), "--verbose"])
-    assert result.exit_code == 0, result.output
-    # The info line from cli.py and the per-file debug line from the scanner
-    # must both be present under --verbose.
-    assert "Scanning directory" in result.output
-    assert "Indexed intro.md" in result.output
+    assert result.exit_code == 0, result.stderr
+    # Logs are routed to stderr to keep stdout machine-parseable; the info
+    # line from cli.py and the per-file debug line from the scanner must
+    # both be present there under --verbose.
+    assert "Scanning directory" in result.stderr
+    assert "Indexed intro.md" in result.stderr
+
+
+def test_scan_json_output_is_pure_stdout(
+    tmp_path: Path,
+    reset_forgeplane_logger: None,
+) -> None:
+    # Regression guard for the P1 finding: log records on stdout would render
+    # ``scan --format json`` unparseable for downstream tools.
+    (tmp_path / "intro.md").write_text("# intro", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", str(tmp_path), "--format", "json"])
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["files_count"] == 1
+    # The default INFO log line must not contaminate stdout.
+    assert "Scanning directory" not in result.stdout
+
+
+def test_load_settings_finds_dotenv_in_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Regression guard for the P2 finding: python-dotenv's default search
+    # starts at the calling module, which after installation lives in
+    # site-packages. The loader must anchor on the user's cwd instead.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=from-cwd\nLOG_LEVEL=warning\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+    assert settings.openai_api_key == "from-cwd"
+    assert settings.log_level == "WARNING"

@@ -15,7 +15,8 @@ import os
 from dataclasses import dataclass
 from typing import Final
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
+from rich.console import Console
 from rich.logging import RichHandler
 
 # Namespace for every Forgeplane logger. Child loggers are derived via
@@ -59,11 +60,15 @@ def _normalize_log_level(raw: str | None) -> str:
 
 def load_settings() -> Settings:
     """Load environment variables from ``.env`` and return parsed settings."""
-    # ``load_dotenv`` is a no-op when no ``.env`` file is present, which keeps
-    # callers safe in CI environments that inject configuration through real
-    # environment variables. ``override=False`` (the default) preserves
-    # values already set in the process environment.
-    load_dotenv()
+    # ``find_dotenv(usecwd=True)`` anchors the search at the user's current
+    # working directory rather than the package install location, so a ``.env``
+    # placed next to where ``forgeplane`` was invoked is picked up even when
+    # Forgeplane is installed into site-packages.
+    # ``load_dotenv`` is a no-op when no file is found, which keeps CI safe
+    # when configuration arrives through real environment variables.
+    # ``override=False`` (the default) preserves values already set in the
+    # process environment.
+    load_dotenv(find_dotenv(usecwd=True))
     return Settings(
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
         log_level=_normalize_log_level(os.environ.get("LOG_LEVEL")),
@@ -71,8 +76,12 @@ def load_settings() -> Settings:
 
 
 def _build_rich_handler(level: str) -> RichHandler:
+    # Route log records to stderr so machine-readable command output
+    # (for example ``scan --format json``) on stdout stays parseable when
+    # logging runs at INFO or above.
     handler = RichHandler(
         level=level,
+        console=Console(stderr=True),
         rich_tracebacks=True,
         show_time=True,
         show_path=False,
