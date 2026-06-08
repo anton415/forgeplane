@@ -157,9 +157,12 @@ def _serialise_report(report: ScanReport, output_format: OutputFormat) -> str:
         return json.dumps(report, ensure_ascii=False, indent=2)
     if output_format == "yaml":
         return yaml.safe_dump(report, allow_unicode=True, sort_keys=False)
-    # ``text`` is intentionally rejected here; the caller checks the format
-    # before dispatching, so this is purely a defensive guard.
-    raise ValueError(f"Unsupported serialisable format: {output_format!r}")
+    # ``text`` is intentionally rejected here; both call sites gate on
+    # SERIALISABLE_FORMATS, so this branch is unreachable in normal use and
+    # exists only as a defensive guard for future call sites.
+    raise ValueError(  # pragma: no cover
+        f"Unsupported serialisable format: {output_format!r}"
+    )
 
 
 def _build_report_filename(
