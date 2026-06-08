@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -110,6 +111,48 @@ def test_scan_json_output_includes_results(tmp_path: Path) -> None:
     # TODO markers in two sections must be flagged in the serialised result.
     assert "Acceptance Criteria" in record["todos_found"]
     assert record["readiness"] in {"not_ready", "partial"}
+
+
+def test_scan_text_output_handles_empty_directory(tmp_path: Path) -> None:
+    # Covers the ``if report["files"]:`` false branch in print_text_report:
+    # an empty directory must still produce a summary table without listing
+    # any files or rendering a readiness table.
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", str(tmp_path)])
+    assert result.exit_code == 0, result.stderr
+    assert "Forgeplane scan report" in result.stdout
+    # No file list, no readiness table.
+    assert "Files:" not in result.stdout
+    assert "Spec readiness" not in result.stdout
+
+
+def test_scan_skips_scoring_when_no_markdown_files(tmp_path: Path) -> None:
+    # Covers the ``if md_entries:`` false branch in :func:`scan`: a directory
+    # without Markdown files must still produce a valid report with an empty
+    # ``results`` array and no readiness table in the text output.
+    (tmp_path / "data.yaml").write_text("title: x\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", str(tmp_path), "--format", "json"])
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["files_count"] == 1
+    assert payload["results"] == []
+
+
+def test_scan_yaml_output_carries_results(tmp_path: Path) -> None:
+    # Covers the ``--format yaml`` branch in :func:`scan` and confirms the
+    # serialised payload round-trips through PyYAML with the readiness data.
+    (tmp_path / "spec.md").write_text(
+        "## Goal\nTODO\n## Acceptance Criteria\nTODO\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", str(tmp_path), "--format", "yaml"])
+    assert result.exit_code == 0, result.stderr
+    payload = yaml.safe_load(result.stdout)
+    assert payload["files_count"] == 1
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["file"] == "spec.md"
 
 
 def test_scan_text_output_renders_readiness_table(tmp_path: Path) -> None:
