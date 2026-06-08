@@ -163,6 +163,24 @@ forgeplane scan path/to/docs --format json
 forgeplane scan path/to/docs --format yaml
 ```
 
+### Saving the report for CI
+
+Pass `--output-dir` (alias `-o`) together with `--format json` or
+`--format yaml` to also write the payload to disk. The file is named
+`scan_{timestamp}.{ext}`, where the timestamp is UTC in
+`YYYYMMDDTHHMMSSZ` form, so the path is deterministic for any given moment
+and trivial to archive as a build artifact:
+
+```bash
+forgeplane scan path/to/docs --format json --output-dir reports/
+# writes reports/scan_20260608T123456Z.json
+```
+
+The directory is created if it does not exist. The same payload is still
+printed to stdout, so a CI step can both archive the file and pipe the
+report through `jq` or `yq` in the same job. The default `reports/` path
+is ignored by Git via the bundled `.gitignore`.
+
 ### Generate API specification
 
 ```bash
@@ -304,7 +322,7 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, and `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, and the JSON `results` field).
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, and `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations).
 
 ## Roadmap
 

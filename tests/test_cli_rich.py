@@ -5,6 +5,7 @@
 
 import io
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,10 +15,12 @@ from typer.testing import CliRunner
 
 from forgeplane import cli
 from forgeplane.cli import (
+    _build_report_filename,
     app,
     build_readiness_table,
     print_readiness_table,
     readiness_color,
+    save_report,
     score_color,
 )
 from forgeplane.specs.schemas import ScanResult
@@ -153,6 +156,130 @@ def test_scan_yaml_output_carries_results(tmp_path: Path) -> None:
     assert payload["files_count"] == 1
     assert len(payload["results"]) == 1
     assert payload["results"][0]["file"] == "spec.md"
+
+
+def test_build_report_filename_uses_format_and_timestamp() -> None:
+    # The filename must be deterministic for a given moment so CI artifacts
+    # can be looked up without scanning the directory.
+    moment = datetime(2026, 6, 8, 12, 34, 56, tzinfo=UTC)
+    assert _build_report_filename("json", now=moment) == "scan_20260608T123456Z.json"
+    assert _build_report_filename("yaml", now=moment) == "scan_20260608T123456Z.yaml"
+
+
+def test_save_report_writes_payload_to_directory(tmp_path: Path) -> None:
+    # The helper creates the directory on demand and returns the written path
+    # so the CLI can log it for the user.
+    report: cli.ScanReport = {
+        "path": "/tmp/docs",
+        "files_count": 0,
+        "total_size_bytes": 0,
+        "extensions": {},
+        "files": [],
+        "results": [],
+    }
+    output_dir = tmp_path / "reports"
+    moment = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    written = save_report(report, output_dir, "json", now=moment)
+    assert written == output_dir / "scan_20260102T030405Z.json"
+    # ``json.loads(saved_payload) == expected_structure`` — the exact contract
+    # called out in the issue for CI integrations.
+    assert json.loads(written.read_text(encoding="utf-8")) == report
+
+
+def test_save_report_rejects_text_format(tmp_path: Path) -> None:
+    # Saving the rich text rendering would embed ANSI control codes; surface
+    # an explicit error instead of writing an unusable artifact.
+    report: cli.ScanReport = {
+        "path": "/tmp/docs",
+        "files_count": 0,
+        "total_size_bytes": 0,
+        "extensions": {},
+        "files": [],
+        "results": [],
+    }
+    with pytest.raises(ValueError, match="json and yaml"):
+        save_report(report, tmp_path, "text")
+
+
+def test_scan_saves_json_report_to_output_dir(tmp_path: Path) -> None:
+    # End-to-end: --format json + --output-dir writes a scan_*.json file the
+    # next CI step can pick up without parsing stdout.
+    (tmp_path / "spec.md").write_text(
+        "## Goal\nShip a typed scanner.\n## Acceptance Criteria\nWritten.\n",
+        encoding="utf-8",
+    )
+    reports_dir = tmp_path / "reports"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(tmp_path),
+            "--format",
+            "json",
+            "--output-dir",
+            str(reports_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.stderr
+    saved_files = sorted(reports_dir.glob("scan_*.json"))
+    assert len(saved_files) == 1
+    saved_text = saved_files[0].read_text(encoding="utf-8")
+    # Byte-identity (not just structural equality) is the stronger contract:
+    # a CI job can ``diff`` stdout against the archived file and expect a
+    # clean match. ``json.dumps`` omits the trailing newline, so the payload
+    # ends with exactly one ``\n`` in both sources.
+    assert saved_text == result.stdout
+    assert saved_text.endswith("\n")
+    saved_payload = json.loads(saved_text)
+    assert saved_payload["files_count"] == 1
+    assert saved_payload["results"][0]["file"] == "spec.md"
+
+
+def test_scan_saves_yaml_report_to_output_dir(tmp_path: Path) -> None:
+    # YAML branch mirrors the JSON contract; the file extension follows the
+    # chosen --format.
+    (tmp_path / "spec.md").write_text(
+        "## Goal\nShip a typed scanner.\n## Acceptance Criteria\nWritten.\n",
+        encoding="utf-8",
+    )
+    reports_dir = tmp_path / "reports"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(tmp_path),
+            "--format",
+            "yaml",
+            "--output-dir",
+            str(reports_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.stderr
+    saved_files = sorted(reports_dir.glob("scan_*.yaml"))
+    assert len(saved_files) == 1
+    saved_text = saved_files[0].read_text(encoding="utf-8")
+    # Same byte-identity contract as the JSON branch: ``yaml.safe_dump``
+    # already terminates with one ``\n`` and stdout must mirror that.
+    assert saved_text == result.stdout
+    assert saved_text.endswith("\n")
+    saved_payload = yaml.safe_load(saved_text)
+    assert saved_payload["files_count"] == 1
+    assert saved_payload["results"][0]["file"] == "spec.md"
+
+
+def test_scan_rejects_output_dir_with_text_format(tmp_path: Path) -> None:
+    # Combining --output-dir with the default text format is a usage error;
+    # the CLI should fail fast before scanning anything.
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["scan", str(tmp_path), "--output-dir", str(tmp_path / "reports")],
+    )
+    assert result.exit_code != 0
+    # No partial artifact should be created when the invocation is rejected.
+    assert not (tmp_path / "reports").exists()
 
 
 def test_scan_text_output_renders_readiness_table(tmp_path: Path) -> None:
