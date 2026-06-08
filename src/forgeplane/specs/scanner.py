@@ -10,6 +10,7 @@ from typing import Final, TypedDict
 
 from forgeplane.core.config import get_logger
 from forgeplane.specs.files import FileEntry, collect_files
+from forgeplane.specs.schemas import Readiness, ScanResult
 
 # Module-level logger so scan steps surface under --verbose without each
 # function re-deriving the namespace.
@@ -44,6 +45,45 @@ _HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(
 # detection so a ``~~~~`` open is not closed by a shorter ``~~~`` run.
 _FENCE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*(`{3,}|~{3,})")
 
+# Each expected section contributes the same share to the readiness score.
+# Five sections at twenty points each cap the score at the 0..100 range
+# enforced by ScanResult.
+SECTION_WEIGHT: Final[int] = 20
+
+# Minimum body length, in characters, for a section to count as "strong".
+# Acceptance Criteria carries a richer expectation (checklist or list of
+# behaviours), so its bar is higher than the rest of the sections.
+SECTION_MIN_LENGTHS: Final[dict[str, int]] = {
+    "Goal": 40,
+    "Context": 40,
+    "Acceptance Criteria": 80,
+    "Risks": 40,
+    "Open Questions": 40,
+}
+
+# Words that flag unfinished content inside a section body. Matched as whole
+# words to avoid false positives on identifiers like ``todos_found``.
+_TODO_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:TODO|FIXME|TBD)\b")
+
+# Score thresholds that map a numeric score onto the readiness enum exposed
+# by ScanResult. Keeping the values here (and not in the schema) avoids
+# circular imports when CLI helpers want to colour-code a raw score.
+READY_THRESHOLD: Final[int] = 80
+PARTIAL_THRESHOLD: Final[int] = 60
+
+
+class ScanResultRecord(TypedDict):
+    """Serialised ScanResult kept compatible with the Pydantic schema."""
+
+    # Mirrors ``ScanResult.model_dump`` so JSON/YAML emitters can round-trip
+    # the per-file readiness results without an extra conversion step.
+    file: str
+    score: int
+    missing: list[str]
+    weak: list[str]
+    todos_found: list[str]
+    readiness: Readiness
+
 
 class ScanReport(TypedDict):
     """Report structure returned by scan_docs."""
@@ -55,6 +95,9 @@ class ScanReport(TypedDict):
     total_size_bytes: int
     extensions: dict[str, int]
     files: list[str]
+    # Per-file readiness results for every discovered ``.md`` spec. Empty when
+    # the scan target contains no Markdown files.
+    results: list[ScanResultRecord]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +111,27 @@ class ScanSummary:
     total_size_bytes: int
     extensions: dict[str, int]
 
-    def to_report(self) -> ScanReport:
+    def to_report(self, results: list[ScanResult] | None = None) -> ScanReport:
+        # Spell out each field so mypy can type-check the TypedDict literal
+        # against the Pydantic model rather than splatting an opaque dict.
+        result_records: list[ScanResultRecord] = [
+            ScanResultRecord(
+                file=result.file,
+                score=result.score,
+                missing=result.missing,
+                weak=result.weak,
+                todos_found=result.todos_found,
+                readiness=result.readiness,
+            )
+            for result in (results or [])
+        ]
         return {
             "path": str(self.path),
             "files_count": len(self.files),
             "total_size_bytes": self.total_size_bytes,
             "extensions": self.extensions,
             "files": [file.relative_path for file in self.files],
+            "results": result_records,
         }
 
 
@@ -118,7 +175,13 @@ def build_scan_summary(path: Path, files: list[FileEntry] | None = None) -> Scan
 
 
 def scan_docs(path: Path) -> ScanReport:
-    return build_scan_summary(path).to_report()
+    # Score every discovered Markdown spec so the public scanner entry point
+    # honours the ``ScanReport.results`` contract for direct API callers.
+    # Without this, only the CLI (which scores results itself) would populate
+    # the readiness data; library users would always see ``results == []``.
+    summary = build_scan_summary(path)
+    results = [score_spec_file(entry) for entry in markdown_entries(summary)]
+    return summary.to_report(results=results)
 
 
 def parse_sections(text: str) -> dict[str, str | None]:
@@ -175,3 +238,81 @@ def parse_sections(text: str) -> dict[str, str | None]:
 def parse_spec_file(path: Path) -> dict[str, str | None]:
     """Read a Markdown spec from disk and parse its expected sections."""
     return parse_sections(path.read_text(encoding="utf-8"))
+
+
+def _section_min_length(name: str) -> int:
+    # Unknown sections fall back to the same baseline as Goal/Context so the
+    # scoring stays deterministic if EXPECTED_SPEC_SECTIONS gains new entries
+    # before SECTION_MIN_LENGTHS is updated.
+    return SECTION_MIN_LENGTHS.get(name, 40)
+
+
+@dataclass(frozen=True, slots=True)
+class SectionScoring:
+    """Per-spec score breakdown produced by :func:`score_sections`."""
+
+    # Splitting the breakdown into a dataclass keeps :func:`score_spec_file`
+    # readable and avoids a fragile multi-value tuple at the call sites.
+    score: int
+    missing: list[str]
+    weak: list[str]
+    todos: list[str]
+
+
+def score_sections(sections: dict[str, str | None]) -> SectionScoring:
+    """Score parsed sections against the readiness expectations."""
+    score = 0
+    missing: list[str] = []
+    weak: list[str] = []
+    todos: list[str] = []
+
+    for name in EXPECTED_SPEC_SECTIONS:
+        body = sections.get(name)
+        if not body:
+            # A missing section forfeits its full weight in the score.
+            missing.append(name)
+            continue
+        has_todo = bool(_TODO_PATTERN.search(body))
+        if has_todo:
+            todos.append(name)
+        too_short = len(body) < _section_min_length(name)
+        if has_todo or too_short:
+            # Half credit for present-but-weak sections so partial work still
+            # moves the score above zero.
+            weak.append(name)
+            score += SECTION_WEIGHT // 2
+        else:
+            score += SECTION_WEIGHT
+
+    return SectionScoring(score=score, missing=missing, weak=weak, todos=todos)
+
+
+def classify_readiness(score: int) -> Readiness:
+    """Map a numeric score to the discrete readiness enum."""
+    if score >= READY_THRESHOLD:
+        return "ready"
+    if score >= PARTIAL_THRESHOLD:
+        return "partial"
+    return "not_ready"
+
+
+def score_spec_file(file: FileEntry) -> ScanResult:
+    """Parse a single Markdown spec and turn it into a ScanResult."""
+    _logger.debug("Scoring spec %s", file.relative_path)
+    sections = parse_spec_file(file.path)
+    scoring = score_sections(sections)
+    return ScanResult(
+        file=file.relative_path,
+        score=scoring.score,
+        missing=scoring.missing,
+        weak=scoring.weak,
+        todos_found=scoring.todos,
+        readiness=classify_readiness(scoring.score),
+    )
+
+
+def markdown_entries(summary: ScanSummary) -> list[FileEntry]:
+    """Return the subset of summary files that the scorer can handle."""
+    # Only Markdown specs are parseable today; future scanners (OpenAPI, etc.)
+    # will extend this filter with additional readers.
+    return [file for file in summary.files if file.extension == ".md"]
