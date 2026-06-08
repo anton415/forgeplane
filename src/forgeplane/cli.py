@@ -8,6 +8,7 @@ scan documentation folders and print reports in different formats.
 """
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -44,6 +45,16 @@ console = Console()
 
 # Keep output formats type-safe and limited to the values supported below.
 OutputFormat: TypeAlias = Literal["json", "text", "yaml"]
+
+# Output formats that can be persisted to disk. Text rendering is for the
+# terminal only because the rich tables embed ANSI control codes that aren't
+# meant to be parsed by downstream CI tooling.
+SERIALISABLE_FORMATS: frozenset[OutputFormat] = frozenset({"json", "yaml"})
+
+# Filename-friendly timestamp pattern for saved reports. ``%Y%m%dT%H%M%SZ``
+# keeps the value sortable, free of characters that need shell quoting, and
+# self-documents the UTC zone via the trailing ``Z``.
+_TIMESTAMP_FORMAT: str = "%Y%m%dT%H%M%SZ"
 
 # Readiness label → rich colour used by the readiness table. Centralising the
 # mapping keeps the table cell and the score column in sync.
@@ -137,6 +148,52 @@ def print_readiness_table(
     (target or console).print(build_readiness_table(results))
 
 
+def _serialise_report(report: ScanReport, output_format: OutputFormat) -> str:
+    """Render the report payload as a string in the requested machine format."""
+    # Centralising the serialisation keeps the stdout branch and the on-disk
+    # save path byte-for-byte identical, so a CI job that diffs stdout against
+    # the saved file never sees a spurious mismatch.
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    if output_format == "yaml":
+        return yaml.safe_dump(report, allow_unicode=True, sort_keys=False)
+    # ``text`` is intentionally rejected here; the caller checks the format
+    # before dispatching, so this is purely a defensive guard.
+    raise ValueError(f"Unsupported serialisable format: {output_format!r}")
+
+
+def _build_report_filename(
+    output_format: OutputFormat, *, now: datetime | None = None
+) -> str:
+    """Return a ``scan_{timestamp}.{ext}`` filename for the chosen format."""
+    # Default to a fresh UTC timestamp; tests pin ``now`` to assert on the
+    # produced filename without depending on wall-clock time.
+    moment = now or datetime.now(UTC)
+    return f"scan_{moment.strftime(_TIMESTAMP_FORMAT)}.{output_format}"
+
+
+def save_report(
+    report: ScanReport,
+    output_dir: Path,
+    output_format: OutputFormat,
+    *,
+    now: datetime | None = None,
+) -> Path:
+    """Write ``report`` under ``output_dir`` and return the written path."""
+    # The CLI rejects ``text`` before reaching this helper, but library callers
+    # benefit from an explicit, typed error rather than a malformed file on
+    # disk.
+    if output_format not in SERIALISABLE_FORMATS:
+        raise ValueError(
+            "save_report only supports the json and yaml formats; "
+            f"got {output_format!r}."
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / _build_report_filename(output_format, now=now)
+    path.write_text(_serialise_report(report, output_format), encoding="utf-8")
+    return path
+
+
 def _build_progress() -> Progress:
     # Spinner + bar + "n of m" + elapsed time produce a readable progress line
     # without overwhelming narrow terminals.
@@ -207,9 +264,36 @@ def scan(
             help="Log scan steps at DEBUG level using a rich handler.",
         ),
     ] = False,
+    # CI integration: when set, the JSON or YAML payload is persisted to
+    # ``{output_dir}/scan_{timestamp}.{ext}`` alongside being printed to stdout
+    # so downstream jobs can archive the artifact without parsing logs.
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            "-o",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+            help=(
+                "Directory where the JSON or YAML report is written as "
+                "scan_{timestamp}.{ext}. Requires --format json or yaml. "
+                "Created if missing."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Scan a documentation directory and print a report."""
     logger = configure_logging(verbose=verbose)
+    # Reject the unsupported combination up front so users do not pay for a
+    # full scan only to receive a usage error at the end.
+    if output_dir is not None and output_format not in SERIALISABLE_FORMATS:
+        raise typer.BadParameter(
+            "--output-dir requires --format json or yaml; the text format is "
+            "for terminal rendering only.",
+            param_hint="--output-dir",
+        )
     logger.info("Scanning directory: %s", path)
     summary = build_scan_summary(path)
     logger.debug(
@@ -235,12 +319,16 @@ def scan(
     logger.debug("Rendering report in %s format", output_format)
 
     # The same report can be rendered in different formats.
-    if output_format == "json":
-        # JSON output is useful for scripts and other tools.
-        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
-    elif output_format == "yaml":
-        # YAML output is easier to read in some documentation workflows.
-        typer.echo(yaml.safe_dump(report, allow_unicode=True, sort_keys=False))
+    if output_format in SERIALISABLE_FORMATS:
+        # JSON is useful for scripts and CI pipelines; YAML is friendlier in
+        # documentation workflows. Both share the same serialised payload.
+        payload = _serialise_report(report, output_format)
+        typer.echo(payload)
+        if output_dir is not None:
+            saved = save_report(report, output_dir, output_format)
+            # Log to stderr (rich handler) so stdout stays a clean payload
+            # that CI jobs can pipe into jq/yq without filtering noise.
+            logger.info("Report saved to %s", saved)
     else:
         # Text output is the default for humans using the CLI directly.
         print_text_report(report)

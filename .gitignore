@@ -18,3 +18,6 @@ wheels/
 .coverage
 coverage.xml
 htmlcov/
+
+# Scan reports written by `forgeplane scan --output-dir reports/` in CI.
+reports/
