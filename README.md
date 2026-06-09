@@ -27,6 +27,12 @@ Forgeplane currently provides a Python CLI with the following early commands:
   structured response through Pydantic before rendering it.
 - `generate` — placeholder command for future API specification generation.
 
+The `forgeplane.evals.reporter` library module aggregates a batch of
+`SpecReview` results into a `pandas` DataFrame, computes a mean readiness
+score and a configurable pass rate, persists the batch as a timestamped CSV,
+and renders the same data as a `rich` table — useful for tracking prompt
+quality across consecutive runs without standing up a database.
+
 The `scan` command reports:
 
 - scanned path;
@@ -63,6 +69,12 @@ The filesystem scanning logic is split into typed modules:
   an `LLMClient`, parses the response, and validates it through the
   `SpecReview` schema. Any failure (HTTP, JSON, schema) surfaces as a single
   `LLMError` so callers can catch one stable type.
+- `evals/reporter.py` — collects N `SpecReview` results into a typed
+  `pandas` DataFrame, exposes `compute_summary` for mean score and pass
+  rate, persists the batch as `eval_{timestamp}.csv` for archival, and
+  renders the per-file detail plus the aggregate metrics through a `rich`
+  table. The same `generate_eval_report` entry point covers both the
+  in-memory (notebook, test) and the CSV-archive (CI) workflows.
 - `llm/client.py` — defines the `LLMClient` Protocol used by the reviewer
   and ships an `OpenAIChatClient` HTTP implementation that calls
   OpenAI-compatible Chat Completions endpoints with `response_format=json_object`
@@ -263,6 +275,37 @@ rich handler as the rest of the CLI. With `--verbose` you also see each
 attempt counter (`LLM request attempt 1/3`, …) and the backoff sleep
 between attempts.
 
+### Track review quality across runs
+
+The `forgeplane.evals.reporter` module turns a batch of
+`SpecReview` objects into a pandas DataFrame and computes the headline
+metrics — mean score and pass rate — that are most useful for tracking how
+prompt changes affect review quality over time:
+
+```python
+from pathlib import Path
+
+from forgeplane.evals.reporter import generate_eval_report
+from forgeplane.specs.schemas import SpecReview
+
+reviews = [
+    SpecReview(file="todo-module.md", score=85, recommendations=["add examples"]),
+    SpecReview(file="auth-module.md", score=55, risks=["session storage"]),
+]
+
+report = generate_eval_report(reviews, output_dir=Path("reports/"))
+print(report.summary.mean_score, report.summary.pass_rate)
+# Persists reports/eval_{timestamp}.csv with per-file scores and finding counts.
+```
+
+The default pass threshold (`80`) matches the scanner's `READY_THRESHOLD`
+so the same 0..100 cut-off applies across both the static scan and the LLM
+review signals; override it with the `pass_threshold` argument when a
+different quality bar is in play. The returned `EvalReport` carries the
+DataFrame, the `EvalSummary`, and the on-disk CSV path (or `None` when no
+`output_dir` was supplied). Call `print_eval_table` to render the same
+data as a rich table in the terminal.
+
 ### Generate API specification
 
 ```bash
@@ -322,6 +365,9 @@ forgeplane/
 │       │   ├── __init__.py
 │       │   ├── config.py
 │       │   └── files.py
+│       ├── evals/
+│       │   ├── __init__.py
+│       │   └── reporter.py
 │       ├── llm/
 │       │   ├── __init__.py
 │       │   └── client.py
@@ -335,6 +381,7 @@ forgeplane/
 │   ├── conftest.py
 │   ├── test_cli_rich.py
 │   ├── test_config.py
+│   ├── test_evals_reporter.py
 │   ├── test_files.py
 │   ├── test_reviewer.py
 │   ├── test_scanner.py
@@ -411,7 +458,7 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), and `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client.
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client, and `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering.
 
 ## Roadmap
 
