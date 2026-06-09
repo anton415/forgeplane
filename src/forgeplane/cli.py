@@ -25,7 +25,9 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from forgeplane.core.config import configure_logging
+from forgeplane.core.config import configure_logging, load_settings
+from forgeplane.llm.client import DEFAULT_MODEL, LLMClient, LLMError, OpenAIChatClient
+from forgeplane.specs.reviewer import review_spec_file
 from forgeplane.specs.scanner import (
     PARTIAL_THRESHOLD,
     READY_THRESHOLD,
@@ -34,7 +36,7 @@ from forgeplane.specs.scanner import (
     markdown_entries,
     score_spec_file,
 )
-from forgeplane.specs.schemas import Readiness, ScanResult
+from forgeplane.specs.schemas import Readiness, ScanResult, SpecReview
 
 # Typer uses this object to collect commands and expose them as a CLI.
 # The console script in pyproject.toml points to this app object.
@@ -240,6 +242,143 @@ def generate(
 ) -> None:
     """Generate an API specification."""
     typer.echo(f"Generating a specification for {url} into {output}...")
+
+
+def build_review_table(review: SpecReview) -> Table:
+    """Render a :class:`SpecReview` as a two-column rich Table."""
+    # ``show_lines=True`` keeps multi-line bullet lists visually separated so
+    # users can scan categories quickly when several findings line up.
+    title = f"Spec review · {review.file}" if review.file is not None else "Spec review"
+    table = Table(
+        title=title,
+        title_style="bold",
+        header_style="bold cyan",
+        show_lines=True,
+    )
+    table.add_column("Category", overflow="fold")
+    table.add_column("Findings", overflow="fold")
+
+    # Score gets its own row at the top with the same colour scheme used by
+    # the scan readiness table so users can intuit the value without
+    # re-reading the legend.
+    score_style = score_color(review.score)
+    table.add_row("Score", f"[bold {score_style}]{review.score}[/]")
+
+    # Each category renders as a bullet list, or an explicit "none" placeholder
+    # when the LLM did not flag anything. Keeping the empty-state visible
+    # prevents users from confusing an empty list with a missing key.
+    _add_review_findings(table, "Ambiguities", review.ambiguities)
+    _add_review_findings(
+        table, "Missing acceptance criteria", review.missing_acceptance_criteria
+    )
+    _add_review_findings(table, "Recommendations", review.recommendations)
+    _add_review_findings(table, "Risks", review.risks)
+    return table
+
+
+def _add_review_findings(table: Table, label: str, items: list[str]) -> None:
+    """Append a category row that bullet-lists ``items`` under ``label``."""
+    if not items:
+        table.add_row(label, "[green]none[/]")
+        return
+    body = "\n".join(f"• {item}" for item in items)
+    table.add_row(label, body)
+
+
+def print_review(review: SpecReview, target: Console | None = None) -> None:
+    """Render a :class:`SpecReview` to the terminal as a rich Table."""
+    (target or console).print(build_review_table(review))
+
+
+def _make_review_client(model: str) -> LLMClient:
+    """Build the default LLM client used by ``forgeplane review``.
+
+    The CLI calls this once per invocation; tests monkey-patch the function so
+    they can substitute a deterministic in-memory client without touching the
+    network or the environment.
+    """
+    settings = load_settings()
+    if not settings.openai_api_key:
+        # ``BadParameter`` keeps the error surface consistent with the rest of
+        # the CLI: Typer renders it as a single red line with no traceback.
+        raise typer.BadParameter(
+            "OPENAI_API_KEY is required for `forgeplane review`. "
+            "Add it to your .env file or set it in the process environment.",
+            param_hint="OPENAI_API_KEY",
+        )
+    return OpenAIChatClient(api_key=settings.openai_api_key, model=model)
+
+
+@app.command()
+def review(
+    # File must exist before we make any LLM call so users get an immediate
+    # error on typos instead of paying for a no-op API request.
+    path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Path to the Markdown specification to review",
+        ),
+    ],
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--format",
+            "-f",
+            case_sensitive=False,
+            help="Review format: json, text, or yaml",
+        ),
+    ] = "text",
+    model: Annotated[
+        str,
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                "Chat completions model name. Defaults to a small, fast model "
+                "suitable for review-time prompts."
+            ),
+        ),
+    ] = DEFAULT_MODEL,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Log review steps at DEBUG level using a rich handler.",
+        ),
+    ] = False,
+) -> None:
+    """Send a Markdown spec to an LLM reviewer and render the structured result."""
+    logger = configure_logging(verbose=verbose)
+    logger.info("Reviewing spec: %s", path)
+    client = _make_review_client(model)
+    try:
+        result = review_spec_file(path, client)
+    except LLMError as exc:
+        # ``BadParameter`` makes Typer exit with a clean non-zero status and
+        # the error text rendered on stderr, which is what CI jobs want.
+        logger.error("LLM review failed: %s", exc)
+        raise typer.BadParameter(str(exc), param_hint="LLM") from exc
+
+    logger.debug("Rendering review in %s format", output_format)
+    if output_format == "json":
+        # ``model_dump_json`` already guarantees a JSON object with all
+        # schema-validated fields present; the trailing ``\n`` mirrors the
+        # scan command's byte-identity contract.
+        typer.echo(result.model_dump_json(indent=2))
+    elif output_format == "yaml":
+        typer.echo(
+            yaml.safe_dump(result.model_dump(), allow_unicode=True, sort_keys=False),
+            nl=False,
+        )
+    else:
+        # ``text`` is the default human-facing format.
+        print_review(result)
 
 
 @app.command()

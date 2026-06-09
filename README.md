@@ -23,6 +23,8 @@ The long-term goal is to make API specification work faster, more repeatable, an
 Forgeplane currently provides a Python CLI with the following early commands:
 
 - `scan` — scans a documentation directory and prints a report.
+- `review` — sends a single Markdown spec to an LLM reviewer and validates the
+  structured response through Pydantic before rendering it.
 - `generate` — placeholder command for future API specification generation.
 
 The `scan` command reports:
@@ -44,6 +46,12 @@ The codebase also includes early Pydantic schemas for API readiness checks:
 
 - `SectionCheck` — describes whether an expected documentation section exists, how much content it has, and whether it contains TODO markers.
 - `ScanResult` — describes readiness for one file, including a normalized score from `0` to `100`, missing sections, weak sections, TODO findings, and a constrained readiness value: `ready`, `partial`, or `not_ready`.
+- `SpecReview` — structured LLM review of one spec file. Carries the
+  optional source `file`, a normalized `score` (`0`..`100`), and four lists
+  populated by the model: `ambiguities`, `missing_acceptance_criteria`,
+  `recommendations`, and `risks`. The schema sets `extra="forbid"`, so any
+  unknown keys returned by the model fail validation instead of silently
+  reaching the report.
 
 The filesystem scanning logic is split into typed modules:
 
@@ -51,6 +59,15 @@ The filesystem scanning logic is split into typed modules:
 - `core/config.py` — loads runtime settings (`OPENAI_API_KEY`, `LOG_LEVEL`) from `.env` via `python-dotenv` and configures the Forgeplane logger with a `rich` handler.
 - `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic.
 - `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI and parses Markdown spec sections.
+- `specs/reviewer.py` — assembles the review prompt, dispatches the spec to
+  an `LLMClient`, parses the response, and validates it through the
+  `SpecReview` schema. Any failure (HTTP, JSON, schema) surfaces as a single
+  `LLMError` so callers can catch one stable type.
+- `llm/client.py` — defines the `LLMClient` Protocol used by the reviewer
+  and ships an `OpenAIChatClient` HTTP implementation that calls
+  OpenAI-compatible Chat Completions endpoints with `response_format=json_object`
+  via `httpx`. Tests substitute the client through a `Protocol`-conformant
+  fake without hitting the network.
 
 The Markdown section parser extracts the body of each expected `##` heading from a spec file and returns a `dict[str, str | None]` keyed by the expected section names: `Goal`, `Context`, `Acceptance Criteria`, `Risks`, `Open Questions`. Missing or empty sections collapse to `None`. Headings follow CommonMark ATX rules (up to three spaces of indent, an optional closing run of `#`s), and `##` lines that appear inside fenced code blocks are ignored. Sample inputs live in `examples/good_spec.md` and `examples/weak_spec.md`.
 
@@ -181,6 +198,53 @@ printed to stdout, so a CI step can both archive the file and pipe the
 report through `jq` or `yq` in the same job. The default `reports/` path
 is ignored by Git via the bundled `.gitignore`.
 
+### Review a Markdown spec with an LLM
+
+```bash
+forgeplane review docs/specs/todo-module.md
+```
+
+The command sends the spec to an OpenAI-compatible Chat Completions endpoint
+in JSON mode, validates the response against the `SpecReview` Pydantic
+schema, and renders the result as a rich Table by default. Findings collapse
+to an explicit `none` placeholder when the model has nothing to flag for a
+category, so an empty list never looks like a missing key.
+
+`OPENAI_API_KEY` is required for this command. Add it to your `.env` (see
+[Configuration](#configuration)) or set it in the process environment. The
+CLI fails fast with a single non-zero exit and a clear error message when
+the key is missing.
+
+Choose a different model with `--model` / `-m`:
+
+```bash
+forgeplane review docs/specs/todo-module.md --model gpt-4o
+```
+
+Switch to a machine-readable format for CI integrations:
+
+```bash
+forgeplane review docs/specs/todo-module.md --format json
+forgeplane review docs/specs/todo-module.md --format yaml
+```
+
+Example JSON payload (the source file name is attached after validation, so
+it never relies on the model to populate it):
+
+```json
+{
+  "file": "todo-module.md",
+  "score": 72,
+  "ambiguities": ["the term 'fast' is undefined"],
+  "missing_acceptance_criteria": ["pagination semantics"],
+  "recommendations": ["specify pagination limits"],
+  "risks": ["timezone handling"]
+}
+```
+
+Add `--verbose` (or `-v`) to log review steps at `DEBUG` through the same
+rich handler as the rest of the CLI.
+
 ### Generate API specification
 
 ```bash
@@ -240,9 +304,13 @@ forgeplane/
 │       │   ├── __init__.py
 │       │   ├── config.py
 │       │   └── files.py
+│       ├── llm/
+│       │   ├── __init__.py
+│       │   └── client.py
 │       └── specs/
 │           ├── __init__.py
 │           ├── files.py
+│           ├── reviewer.py
 │           ├── scanner.py
 │           └── schemas.py
 ├── tests/
@@ -250,6 +318,7 @@ forgeplane/
 │   ├── test_cli_rich.py
 │   ├── test_config.py
 │   ├── test_files.py
+│   ├── test_reviewer.py
 │   ├── test_scanner.py
 │   └── test_scoring.py
 ├── examples/
@@ -258,8 +327,10 @@ forgeplane/
 ├── scripts/
 │   └── generate_report_artifact.py
 ├── docs/
-│   └── reports/
-│       └── scan_report.svg
+│   ├── reports/
+│   │   └── scan_report.svg
+│   └── specs/
+│       └── todo-module.md
 ├── .env.example
 ├── Makefile
 ├── main.py
@@ -322,7 +393,7 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, and `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations).
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), and `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client.
 
 ## Roadmap
 
