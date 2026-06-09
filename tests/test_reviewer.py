@@ -18,9 +18,11 @@ from forgeplane import cli
 from forgeplane.cli import app, build_review_table, print_review
 from forgeplane.llm.client import (
     DEFAULT_BASE_URL,
+    MAX_ATTEMPTS,
     ChatMessage,
     LLMClient,
     LLMError,
+    LLMRetryableError,
     OpenAIChatClient,
 )
 from forgeplane.specs.reviewer import (
@@ -31,6 +33,15 @@ from forgeplane.specs.reviewer import (
     review_spec_text,
 )
 from forgeplane.specs.schemas import SpecReview
+
+
+@pytest.fixture(autouse=True)
+def _disable_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The OpenAI client retry policy waits between attempts via
+    # ``tenacity.nap.time.sleep``; muting it keeps the test suite fast while
+    # still exercising the full retry control flow (attempt counts, error
+    # classification, before/before_sleep callbacks).
+    monkeypatch.setattr("tenacity.nap.time.sleep", lambda _seconds: None)
 
 
 def _render(table_or_text: object) -> str:
@@ -241,7 +252,15 @@ def test_openai_client_posts_json_mode_to_chat_completions() -> None:
 
 
 def test_openai_client_wraps_http_errors_as_llm_error() -> None:
+    # Persistent 429 responses exhaust the retry budget and surface as a
+    # single ``LLMError`` (the retryable subclass) to the caller. Each
+    # attempt hits the mocked transport, so the call counter confirms the
+    # retry loop is the path being exercised here, not a single-shot.
+    call_count = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
         return httpx.Response(429, text="rate limited")
 
     transport = httpx.MockTransport(handler)
@@ -252,6 +271,121 @@ def test_openai_client_wraps_http_errors_as_llm_error() -> None:
             client.complete_json([{"role": "user", "content": "hi"}])
     finally:
         http_client.close()
+    assert call_count == MAX_ATTEMPTS
+
+
+def test_openai_client_retries_on_429_then_succeeds() -> None:
+    # A flaky upstream that rate-limits the first call and returns a clean
+    # 200 on the second must succeed without surfacing an exception: this
+    # is the core promise of the tenacity retry policy.
+    statuses = [429, 200]
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        status = statuses[call_count]
+        call_count += 1
+        if status == 200:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": json.dumps({"score": 75})}}]},
+            )
+        return httpx.Response(status, text="rate limited")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    try:
+        client = OpenAIChatClient(api_key="sk-test", client=http_client)
+        body = client.complete_json([{"role": "user", "content": "hi"}])
+    finally:
+        http_client.close()
+    assert json.loads(body) == {"score": 75}
+    assert call_count == 2
+
+
+def test_openai_client_retries_on_500_then_succeeds() -> None:
+    # Same contract as the 429 test, but exercises the 5xx branch of the
+    # retry classifier. Keeps the two error families covered independently
+    # so a future regression in one does not silently mask the other.
+    statuses = [500, 200]
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        status = statuses[call_count]
+        call_count += 1
+        if status == 200:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": json.dumps({"score": 50})}}]},
+            )
+        return httpx.Response(status, text="server error")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    try:
+        client = OpenAIChatClient(api_key="sk-test", client=http_client)
+        body = client.complete_json([{"role": "user", "content": "hi"}])
+    finally:
+        http_client.close()
+    assert json.loads(body) == {"score": 50}
+    assert call_count == 2
+
+
+def test_openai_client_does_not_retry_on_400() -> None:
+    # 4xx responses other than 429 are caller mistakes (bad request, auth);
+    # retrying them only wastes time and may dispatch the same malformed
+    # call repeatedly. The handler counter guards against that.
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(400, text="bad request")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    try:
+        client = OpenAIChatClient(api_key="sk-test", client=http_client)
+        with pytest.raises(LLMError, match="HTTP call failed"):
+            client.complete_json([{"role": "user", "content": "hi"}])
+    finally:
+        http_client.close()
+    assert call_count == 1
+
+
+def test_openai_client_retries_on_transport_error_then_succeeds() -> None:
+    # Network-level failures (DNS, refused, timeout) reach the client as
+    # ``httpx.TransportError``; the retry policy treats them like 5xx so a
+    # transient connectivity blip does not poison a whole review run.
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.ConnectError("connection refused")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"score": 80})}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    try:
+        client = OpenAIChatClient(api_key="sk-test", client=http_client)
+        body = client.complete_json([{"role": "user", "content": "hi"}])
+    finally:
+        http_client.close()
+    assert json.loads(body) == {"score": 80}
+    assert call_count == 2
+
+
+def test_llm_retryable_error_is_llm_error() -> None:
+    # Callers that catch the broad ``LLMError`` base type must also catch
+    # the retryable variant so existing code keeps working after the retry
+    # policy lands.
+    assert issubclass(LLMRetryableError, LLMError)
 
 
 def test_openai_client_wraps_missing_choices_as_llm_error() -> None:

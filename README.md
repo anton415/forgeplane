@@ -66,8 +66,16 @@ The filesystem scanning logic is split into typed modules:
 - `llm/client.py` — defines the `LLMClient` Protocol used by the reviewer
   and ships an `OpenAIChatClient` HTTP implementation that calls
   OpenAI-compatible Chat Completions endpoints with `response_format=json_object`
-  via `httpx`. Tests substitute the client through a `Protocol`-conformant
-  fake without hitting the network.
+  via `httpx`. The request is wrapped in a `tenacity` retry policy
+  (`stop_after_attempt(3)`, `wait_exponential(min=1, max=10)`) that retries
+  rate limits (HTTP 429), server errors (HTTP 5xx), and network transport
+  failures, while terminal errors (4xx other than 429, malformed JSON,
+  missing fields) raise the single `LLMError` exception immediately. A
+  retryable subclass `LLMRetryableError` keeps the failure type stable for
+  callers that catch the base class. Every attempt and backoff sleep is
+  logged through the rich-handled Forgeplane logger so `--verbose`
+  invocations show the retry timeline. Tests substitute the client through
+  a `Protocol`-conformant fake without hitting the network.
 
 The Markdown section parser extracts the body of each expected `##` heading from a spec file and returns a `dict[str, str | None]` keyed by the expected section names: `Goal`, `Context`, `Acceptance Criteria`, `Risks`, `Open Questions`. Missing or empty sections collapse to `None`. Headings follow CommonMark ATX rules (up to three spaces of indent, an optional closing run of `#`s), and `##` lines that appear inside fenced code blocks are ignored. Sample inputs live in `examples/good_spec.md` and `examples/weak_spec.md`.
 
@@ -242,8 +250,18 @@ it never relies on the model to populate it):
 }
 ```
 
+Transient upstream failures (HTTP 429, HTTP 5xx, network transport errors)
+are retried up to three times with exponential backoff between 1 s and
+10 s, courtesy of [`tenacity`](https://tenacity.readthedocs.io/). Terminal
+errors (HTTP 4xx other than 429, malformed JSON, missing fields) surface
+immediately as a single `LLMError`. The CLI converts that into a
+non-zero exit code, so a missing API key or a permanent 4xx fails fast
+without a retry storm.
+
 Add `--verbose` (or `-v`) to log review steps at `DEBUG` through the same
-rich handler as the rest of the CLI.
+rich handler as the rest of the CLI. With `--verbose` you also see each
+attempt counter (`LLM request attempt 1/3`, …) and the backoff sleep
+between attempts.
 
 ### Generate API specification
 

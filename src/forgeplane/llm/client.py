@@ -8,16 +8,26 @@ The module defines a :class:`Protocol` so any object exposing a
 implementation that talks to OpenAI-compatible Chat Completions endpoints
 through :mod:`httpx`.
 
-Retry and richer error handling will land in a follow-up task (the
-``tenacity retry & error handling`` checklist item in the parent issue);
-this baseline only wires up the request/response path and surfaces a single
-:class:`LLMError` exception so callers can catch a stable type.
+The HTTP client wraps the request in a :mod:`tenacity` retry policy:
+transient HTTP failures (rate limits and 5xx server errors) are retried with
+exponential backoff up to three attempts, while non-transient failures (4xx
+client errors other than 429, malformed JSON, missing fields) raise the
+single :class:`LLMError` exception immediately. Every attempt is logged
+through the Forgeplane rich-handled logger so ``--verbose`` invocations show
+the retry timeline.
 """
 
 import json
 from typing import Final, Literal, Protocol, TypedDict, runtime_checkable
 
 import httpx
+from tenacity import (
+    RetryCallState,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from forgeplane.core.config import get_logger
 
@@ -38,6 +48,15 @@ DEFAULT_MODEL: Final[str] = "gpt-4o-mini"
 # response, short enough to surface dead endpoints quickly.
 DEFAULT_TIMEOUT: Final[float] = 30.0
 
+# Total number of HTTP attempts before the retry policy gives up. Matches the
+# parent issue's "tenacity retry & error handling" checklist item.
+MAX_ATTEMPTS: Final[int] = 3
+
+# Exponential backoff bounds in seconds. Tenacity multiplies the previous
+# wait by two on each failure, clamped into the ``[min, max]`` window.
+RETRY_WAIT_MIN: Final[float] = 1.0
+RETRY_WAIT_MAX: Final[float] = 10.0
+
 
 class ChatMessage(TypedDict):
     """OpenAI Chat Completions message payload."""
@@ -57,6 +76,17 @@ class LLMError(Exception):
     """
 
 
+class LLMRetryableError(LLMError):
+    """A transient LLM failure that the retry policy should retry.
+
+    Raised for HTTP 429 (rate limited), HTTP 5xx (server errors) and network
+    transport failures (DNS, connection, timeout). It is still an
+    :class:`LLMError`, so callers that catch the parent type continue to
+    work after the retry budget is exhausted and tenacity re-raises the last
+    transient exception.
+    """
+
+
 @runtime_checkable
 class LLMClient(Protocol):
     """Anything that can turn a list of messages into a JSON response string.
@@ -72,6 +102,49 @@ class LLMClient(Protocol):
         # provide the implementation. Exempt from coverage to keep the
         # reported percentage honest.
         ...  # pragma: no cover
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    """Return ``True`` for HTTP statuses worth retrying.
+
+    Per the parent issue's "tenacity retry & error handling" item: rate
+    limits (429) and server-side failures (5xx) are treated as transient and
+    eligible for a retry; everything else is a terminal error.
+    """
+    return status_code == 429 or 500 <= status_code < 600
+
+
+def _log_attempt(retry_state: RetryCallState) -> None:
+    """Log each attempt through the rich-handled Forgeplane logger.
+
+    Called by tenacity before every attempt (including the first), so the
+    rich console shows ``LLM request attempt 1/3``, then ``2/3`` and so on
+    when transient failures occur.
+    """
+    _logger.info(
+        "LLM request attempt %d/%d",
+        retry_state.attempt_number,
+        MAX_ATTEMPTS,
+    )
+
+
+def _log_retry(retry_state: RetryCallState) -> None:
+    """Log the transient failure that triggered the upcoming backoff sleep.
+
+    Called by tenacity between attempts, only when the previous attempt
+    raised an exception that the retry policy classified as retryable. The
+    next sleep duration is read directly from the retry state so the log
+    line always matches what tenacity is about to do.
+    """
+    outcome = retry_state.outcome
+    exc = outcome.exception() if outcome is not None else None
+    sleep_seconds = retry_state.next_action.sleep if retry_state.next_action else 0.0
+    _logger.warning(
+        "LLM call attempt %d failed (%s); retrying in %.1fs",
+        retry_state.attempt_number,
+        exc,
+        sleep_seconds,
+    )
 
 
 class OpenAIChatClient:
@@ -107,6 +180,20 @@ class OpenAIChatClient:
         # the client is constructed on demand inside ``complete_json``.
         self._client = client
 
+    @retry(
+        # ``reraise=True`` propagates the last underlying exception once the
+        # retry budget is spent instead of wrapping it in tenacity's own
+        # ``RetryError``, so callers still catch :class:`LLMError`.
+        reraise=True,
+        stop=stop_after_attempt(MAX_ATTEMPTS),
+        wait=wait_exponential(multiplier=1, min=RETRY_WAIT_MIN, max=RETRY_WAIT_MAX),
+        # Only transient failures are retried; permanent ones (bad request,
+        # malformed JSON, missing fields) raise the base ``LLMError`` and
+        # short-circuit the retry loop.
+        retry=retry_if_exception_type(LLMRetryableError),
+        before=_log_attempt,
+        before_sleep=_log_retry,
+    )
     def complete_json(self, messages: list[ChatMessage]) -> str:
         """Send ``messages`` to the Chat Completions endpoint and return JSON."""
         url = f"{self._base_url}/chat/completions"
@@ -130,6 +217,13 @@ class OpenAIChatClient:
             client = self._client or httpx.Client(timeout=self._timeout)
             try:
                 response = client.post(url, headers=headers, json=payload)
+                # Split 429/5xx from other HTTP errors so the retry policy
+                # only fires on transient server-side problems; everything
+                # else surfaces immediately as a terminal LLMError below.
+                if _is_retryable_status(response.status_code):
+                    raise LLMRetryableError(
+                        f"LLM HTTP call failed with status {response.status_code}"
+                    )
                 response.raise_for_status()
                 # ``httpx.Response.json`` delegates to the stdlib ``json``
                 # module and surfaces decode failures as ``json.JSONDecodeError``
@@ -142,6 +236,10 @@ class OpenAIChatClient:
                 # owned by the caller (typically a test fixture).
                 if self._client is None:
                     client.close()
+        except httpx.TransportError as exc:
+            # Network-level failures (DNS, connection refused, timeout) are
+            # transient and worth retrying alongside 429/5xx.
+            raise LLMRetryableError(f"LLM HTTP call failed: {exc}") from exc
         except httpx.HTTPError as exc:
             raise LLMError(f"LLM HTTP call failed: {exc}") from exc
         except json.JSONDecodeError as exc:
