@@ -14,6 +14,7 @@ this baseline only wires up the request/response path and surfaces a single
 :class:`LLMError` exception so callers can catch a stable type.
 """
 
+import json
 from typing import Final, Literal, Protocol, TypedDict, runtime_checkable
 
 import httpx
@@ -130,6 +131,11 @@ class OpenAIChatClient:
             try:
                 response = client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
+                # ``httpx.Response.json`` delegates to the stdlib ``json``
+                # module and surfaces decode failures as ``json.JSONDecodeError``
+                # (a ``ValueError`` subclass), not as an ``httpx.HTTPError``.
+                # The dedicated except clause below converts that into the
+                # single stable ``LLMError`` the rest of Forgeplane catches.
                 data = response.json()
             finally:
                 # Only close clients that we created; injected clients are
@@ -138,6 +144,8 @@ class OpenAIChatClient:
                     client.close()
         except httpx.HTTPError as exc:
             raise LLMError(f"LLM HTTP call failed: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"LLM response was not valid JSON: {exc}") from exc
 
         try:
             # OpenAI's Chat Completions returns the model output under

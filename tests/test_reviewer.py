@@ -270,6 +270,25 @@ def test_openai_client_wraps_missing_choices_as_llm_error() -> None:
         http_client.close()
 
 
+def test_openai_client_wraps_non_json_body_as_llm_error() -> None:
+    # A 2xx response with a non-JSON body raises ``json.JSONDecodeError``
+    # inside ``Response.json()``. The client must convert that into the same
+    # single ``LLMError`` it advertises for HTTP failures so the CLI keeps
+    # surfacing one stable error type regardless of how the upstream
+    # endpoint or proxy misbehaves.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>not json</html>")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    try:
+        client = OpenAIChatClient(api_key="sk-test", client=http_client)
+        with pytest.raises(LLMError, match="not valid JSON"):
+            client.complete_json([{"role": "user", "content": "hi"}])
+    finally:
+        http_client.close()
+
+
 def test_openai_client_satisfies_protocol() -> None:
     # ``runtime_checkable`` lets the reviewer accept any object exposing
     # ``complete_json``; the concrete client must remain compatible.
