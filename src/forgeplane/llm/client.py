@@ -67,7 +67,10 @@ class LLMClient(Protocol):
 
     def complete_json(self, messages: list[ChatMessage]) -> str:
         """Send ``messages`` and return the assistant's raw JSON content."""
-        ...
+        # Protocol bodies are never executed at runtime; concrete clients
+        # provide the implementation. Exempt from coverage to keep the
+        # reported percentage honest.
+        ...  # pragma: no cover
 
 
 class OpenAIChatClient:

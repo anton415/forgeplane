@@ -277,6 +277,45 @@ def test_openai_client_satisfies_protocol() -> None:
     assert isinstance(client, LLMClient)
 
 
+def test_openai_client_creates_and_closes_default_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Covers the path where ``OpenAIChatClient`` was constructed without an
+    # injected ``httpx.Client``: it must create one on demand and close it
+    # once the request finishes so connections do not leak between calls.
+    close_calls: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"score": 50})}}]},
+        )
+
+    real_client_cls = httpx.Client
+
+    def fake_client_factory(*args: object, **kwargs: object) -> httpx.Client:
+        # Build a real client wired to MockTransport so the request still
+        # round-trips through httpx; only the close() call is instrumented.
+        instance = real_client_cls(transport=httpx.MockTransport(handler))
+        real_close = instance.close
+
+        def tracked_close() -> None:
+            close_calls.append(True)
+            real_close()
+
+        # ``method-assign`` keeps mypy happy on the monkey-patched method.
+        instance.close = tracked_close  # type: ignore[method-assign]
+        return instance
+
+    monkeypatch.setattr("forgeplane.llm.client.httpx.Client", fake_client_factory)
+    client = OpenAIChatClient(api_key="sk-test")
+    body = client.complete_json([{"role": "user", "content": "hi"}])
+    assert json.loads(body) == {"score": 50}
+    # Exactly one auto-created client must be closed; the test fails if a
+    # future refactor stops releasing the resource.
+    assert close_calls == [True]
+
+
 # ---------------------------------------------------------------------------
 # CLI rendering helpers
 # ---------------------------------------------------------------------------
@@ -421,3 +460,15 @@ def test_cli_review_missing_api_key_raises(
     runner = CliRunner()
     result = runner.invoke(app, ["review", str(spec_path)])
     assert result.exit_code != 0
+
+
+def test_make_review_client_returns_openai_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Covers the success path of the factory: when ``OPENAI_API_KEY`` is
+    # set the CLI must hand back a real ``OpenAIChatClient`` rather than the
+    # ``BadParameter`` that fires on the missing-key path above.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    client = cli._make_review_client("gpt-4o-mini")
+    assert isinstance(client, OpenAIChatClient)
