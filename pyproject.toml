@@ -26,6 +26,7 @@ classifiers = [
 # Runtime dependencies needed by the Forgeplane CLI.
 dependencies = [
     "httpx>=0.28.1",
+    "pandas>=3.0.3",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
@@ -71,6 +72,7 @@ ignore = ["UP040"]
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",
+    "pandas-stubs>=3.0.3.260530",
     "pytest>=8.4.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
