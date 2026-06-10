@@ -54,6 +54,40 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/forgeplane"]
 
+# Explicit sdist exclusions (issue #76). Hatchling already skips VCS-ignored
+# files when building from a git checkout, but these project-controlled rules
+# also hold when building from a plain directory (an exported tarball, a CI
+# cache) and cover local-only tool state that must never reach a release
+# artifact. Patterns use .gitignore syntax; unanchored entries match at any
+# depth. `scripts/check_sdist.sh` (run via `make check-sdist`) verifies the
+# built archive against this same deny list before a release.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    # Local AI tool worktrees, settings, and session metadata.
+    ".claude/",
+    # Real environment files; the committed .env.example template still ships.
+    ".env",
+    ".env.local",
+    # Virtual environments.
+    ".venv/",
+    # Build leftovers from previous runs.
+    "dist/",
+    "build/",
+    "wheels/",
+    "*.egg-info",
+    # Bytecode and tool caches.
+    "__pycache__/",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    # Coverage artifacts.
+    ".coverage",
+    "coverage.xml",
+    "htmlcov/",
+    # Scan reports produced by `forgeplane scan --output-dir reports/`.
+    "reports/",
+]
+
 # Strict type checking keeps the source tree fully annotated.
 [tool.mypy]
 strict = true
