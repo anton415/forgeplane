@@ -80,6 +80,12 @@ The filesystem scanning logic is split into typed modules:
   tables, transition validation that rejects anything not in the tables, and
   the rules that derive a running workflow's state from its task states. See
   [Workflow state model](#workflow-state-model) below.
+- `workflow/model.py` — core workflow domain model built on top of the state
+  model: immutable `WorkflowDefinition`/`TaskDefinition` graph types validated
+  at construction (duplicate ids, unknown dependencies, and cycles are
+  rejected), mutable `WorkflowInstance`/`TaskInstance` runtime records, and
+  the `TaskInput`/`TaskResult`/`TaskError` data contracts. See
+  [Workflow domain model](#workflow-domain-model) below.
 - `llm/client.py` — defines the `LLMClient` Protocol used by the reviewer
   and ships an `OpenAIChatClient` HTTP implementation that calls
   OpenAI-compatible Chat Completions endpoints with `response_format=json_object`
@@ -165,6 +171,93 @@ Invariants that must never be violated (each is verified by
    (the `tasks_may_progress` gate).
 4. A workflow completes only when every task is terminal and none failed.
 5. A workflow derived from its tasks fails as soon as any task fails.
+
+## Workflow domain model
+
+The core domain objects of the workflow engine live in
+`forgeplane/workflow/model.py`, layered directly on the state model. The
+module depends only on the standard library and `workflow/states.py` — no
+HTTP, API, or persistence framework — so the domain types can be embedded
+anywhere and tested in isolation.
+
+Immutable definitions (frozen dataclasses, validated at construction):
+
+- `TaskDefinition` — one unit of work: a unique `task_id`, a non-empty
+  `task_type` the engine will dispatch on (for example `"shell"` or
+  `"llm_review"`), the `depends_on` set of upstream task ids, and the
+  authored `parameters` that seed the runtime input. Blank ids/types and
+  self-dependencies are rejected.
+- `WorkflowDefinition` — a validated workflow graph: a `workflow_id` plus a
+  tuple of task definitions whose `depends_on` edges must form a DAG.
+  Construction raises `InvalidDefinitionError` (a `ValueError` subclass) for
+  duplicate task ids, dependencies on unknown tasks, and dependency cycles,
+  so an invalid graph can never exist as a `WorkflowDefinition` value.
+  `execution_order()` returns a deterministic dependency-respecting order,
+  and `task()`/`task_ids` expose the graph for the future engine.
+
+Mutable runtime records (one per execution, state separate from definition):
+
+- `WorkflowInstance` — created from a definition via
+  `WorkflowInstance.from_definition(definition, instance_id=...)`; it starts
+  in the `ready` workflow state (the definition already proved itself valid)
+  with every task `pending`. All state changes go through its methods, so
+  the transition tables and the cross-object invariants of the state model
+  hold by construction: `transition_to` validates workflow moves and accepts
+  the outcome states `completed`/`failed` only when the task states actually
+  derive them (invariants 4 and 5), while `transition_task`, `start_task`,
+  and `record_result` enforce the `tasks_may_progress` gate (invariant 3) by
+  raising `TasksFrozenError` whenever the workflow is not `running`.
+- `TaskInstance` — the per-execution record of one task: its shared
+  immutable definition plus the runtime `state`, `input`, and `result`.
+
+Data contracts that cross a task boundary (immutable snapshots; payloads are
+copied on construction and exposed read-only):
+
+- `TaskInput` — the parameter payload a task receives when it starts,
+  attached by `start_task`.
+- `TaskResult` — the outcome of a finished task: a success `output` payload
+  or a structured `error`, never both. `record_result` derives the terminal
+  task state from the result (`completed` on success, `failed` on error), so
+  state and result cannot contradict each other, and terminal states make a
+  recorded result effectively write-once.
+- `TaskError` — the structured failure shape: a machine-readable `code`, a
+  human-readable `message`, free-form `details`, and a `retryable` hint for
+  the future engine.
+
+A minimal end-to-end construction looks like this:
+
+```python
+from forgeplane.workflow import (
+    TaskDefinition,
+    TaskInput,
+    TaskResult,
+    TaskState,
+    WorkflowDefinition,
+    WorkflowInstance,
+    WorkflowState,
+)
+
+definition = WorkflowDefinition(
+    workflow_id="docs-pipeline",
+    tasks=(
+        TaskDefinition(task_id="fetch", task_type="http"),
+        TaskDefinition(
+            task_id="publish", task_type="shell", depends_on=frozenset({"fetch"})
+        ),
+    ),
+)
+
+instance = WorkflowInstance.from_definition(definition, instance_id="run-1")
+instance.transition_to(WorkflowState.RUNNING)
+for task_id in definition.execution_order():
+    instance.transition_task(task_id, TaskState.READY)
+    instance.start_task(task_id, TaskInput(parameters={"task": task_id}))
+    instance.record_result(task_id, TaskResult.success({"done": True}))
+instance.transition_to(WorkflowState.COMPLETED)
+```
+
+Scheduling, dispatching by task type, persistence, and an API remain engine
+concerns and are intentionally out of scope for the domain model.
 
 ## Installation
 
@@ -452,6 +545,7 @@ forgeplane/
 │       │   └── schemas.py
 │       └── workflow/
 │           ├── __init__.py
+│           ├── model.py
 │           └── states.py
 ├── tests/
 │   ├── conftest.py
@@ -462,6 +556,7 @@ forgeplane/
 │   ├── test_reviewer.py
 │   ├── test_scanner.py
 │   ├── test_scoring.py
+│   ├── test_workflow_model.py
 │   └── test_workflow_states.py
 ├── examples/
 │   ├── good_spec.md
@@ -535,13 +630,13 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client, `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering, and `test_workflow_states.py` covers the workflow/task state model: the enum values, the transition tables, every valid transition, every invalid transition (asserted exhaustively as the complement over the full state-pair product), the terminal-state and no-self-transition invariants, the `tasks_may_progress` gate, and the completion/failure derivation rules.
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client, `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering, `test_workflow_states.py` covers the workflow/task state model: the enum values, the transition tables, every valid transition, every invalid transition (asserted exhaustively as the complement over the full state-pair product), the terminal-state and no-self-transition invariants, the `tasks_may_progress` gate, and the completion/failure derivation rules, and `test_workflow_model.py` covers the workflow domain model: construction and validation of the definitions (blank ids, self-dependencies, duplicate task ids, unknown dependencies, direct and indirect cycles), the deterministic `execution_order`, the immutability of the `TaskInput`/`TaskResult`/`TaskError` payload snapshots, instance creation from a definition, the running-workflow gate on task mutations, the contract-carrying transitions (`start_task`, `record_result`), and the derivation guards on `completed`/`failed` workflow moves.
 
 ## Roadmap
 
 Planned directions:
 
-- Build the MVP workflow engine on top of the state model (DSL, persistence, API).
+- Build the MVP workflow engine on top of the state and domain model (DSL, persistence, API).
 - Improve documentation scanning and validation.
 - Add checks for OpenAPI files.
 - Implement real API specification generation.
