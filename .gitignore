@@ -21,3 +21,7 @@ htmlcov/
 
 # Scan reports written by `forgeplane scan --output-dir reports/` in CI.
 reports/
+
+# Local AI tool state (Claude Code worktrees, settings, session metadata).
+# Mirrored in the sdist excludes in pyproject.toml so it never ships.
+.claude/

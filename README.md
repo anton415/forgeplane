@@ -562,6 +562,7 @@ forgeplane/
 │   ├── good_spec.md
 │   └── weak_spec.md
 ├── scripts/
+│   ├── check_sdist.sh
 │   └── generate_report_artifact.py
 ├── docs/
 │   ├── reports/
@@ -629,6 +630,23 @@ Run the test suite:
 ```bash
 uv run pytest -v
 ```
+
+Verify release packaging before publishing:
+
+```bash
+make check-sdist
+```
+
+`make check-sdist` rebuilds `dist/` with `uv build` and then runs
+`scripts/check_sdist.sh`, which lists every entry in the source distribution
+(`tar -tzf dist/*.tar.gz`) and fails if any local-only path leaked into the
+archive: `.claude/` tool worktrees, `.env` files, virtualenvs, caches,
+coverage data, scan reports, or build leftovers. The deny list mirrors the
+explicit sdist exclusions under `[tool.hatch.build.targets.sdist]` in
+`pyproject.toml`, which guarantee those paths are dropped even when the build
+runs outside a git checkout where `.gitignore` rules would not apply. Wheels
+are unaffected: they only ever package `src/forgeplane` plus the Apache-2.0
+`LICENSE` and `NOTICE` files declared in the project metadata.
 
 Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client, `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering, `test_workflow_states.py` covers the workflow/task state model: the enum values, the transition tables, every valid transition, every invalid transition (asserted exhaustively as the complement over the full state-pair product), the terminal-state and no-self-transition invariants, the `tasks_may_progress` gate, and the completion/failure derivation rules, and `test_workflow_model.py` covers the workflow domain model: construction and validation of the definitions (blank ids, self-dependencies, duplicate task ids, unknown dependencies, direct and indirect cycles), the deterministic `execution_order`, the immutability of the `TaskInput`/`TaskResult`/`TaskError` payload snapshots, instance creation from a definition, the running-workflow gate on task mutations, the contract-carrying transitions (`start_task`, `record_result`), and the derivation guards on `completed`/`failed` workflow moves.
 
