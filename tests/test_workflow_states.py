@@ -229,6 +229,15 @@ class TestTasksMayProgress:
     def test_non_running_workflow_freezes_tasks(self, state: WorkflowState) -> None:
         assert not tasks_may_progress(state)
 
+    def test_serialized_strings_are_coerced(self) -> None:
+        # JSON/YAML payloads carry the plain string form of the StrEnum.
+        assert tasks_may_progress("running")
+        assert not tasks_may_progress("paused")
+
+    def test_unknown_workflow_state_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="exploded"):
+            tasks_may_progress("exploded")
+
 
 class TestDeriveWorkflowState:
     """Completion and failure rules for a running workflow."""
@@ -269,6 +278,20 @@ class TestDeriveWorkflowState:
         # it twice; a generator would otherwise be exhausted mid-check.
         states = (state for state in [TaskState.COMPLETED, TaskState.SKIPPED])
         assert derive_workflow_state(states) is WorkflowState.COMPLETED
+
+    def test_serialized_string_failure_fails_workflow(self) -> None:
+        # JSON/YAML payloads carry the plain string form of the StrEnum; a
+        # string "failed" must trigger fail-fast exactly like the member.
+        assert derive_workflow_state(["completed", "failed"]) is WorkflowState.FAILED
+
+    def test_serialized_string_completion_completes_workflow(self) -> None:
+        states: list[TaskState | str] = ["completed", TaskState.SKIPPED]
+        assert derive_workflow_state(states) is WorkflowState.COMPLETED
+
+    def test_unknown_task_state_is_rejected(self) -> None:
+        # Garbage input must fail loudly instead of counting as in-flight.
+        with pytest.raises(ValueError, match="exploded"):
+            derive_workflow_state(["completed", "exploded"])
 
 
 class TestInvalidTransitionError:

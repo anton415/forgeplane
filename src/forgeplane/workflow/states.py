@@ -193,17 +193,20 @@ def transition_task(current: TaskState, target: TaskState) -> TaskState:
     return target
 
 
-def tasks_may_progress(workflow_state: WorkflowState) -> bool:
+def tasks_may_progress(workflow_state: WorkflowState | str) -> bool:
     """Return ``True`` when tasks of this workflow are allowed to change state.
 
     Invariant 3: task transitions are only legal while the owning workflow is
     ``running``. A paused, draft, or terminal workflow freezes its tasks; the
     engine must check this gate before applying any task transition.
+
+    Accepts the serialized string form as well, so states loaded from
+    JSON/YAML behave identically; unknown values raise ``ValueError``.
     """
-    return workflow_state is WorkflowState.RUNNING
+    return WorkflowState(workflow_state) is WorkflowState.RUNNING
 
 
-def derive_workflow_state(task_states: Iterable[TaskState]) -> WorkflowState:
+def derive_workflow_state(task_states: Iterable[TaskState | str]) -> WorkflowState:
     """Return the state a *running* workflow should hold given its tasks.
 
     This function encodes how task state changes affect workflow state, and
@@ -218,9 +221,15 @@ def derive_workflow_state(task_states: Iterable[TaskState]) -> WorkflowState:
        since ``failed`` was handled above), the workflow is ``completed``.
        A workflow with no tasks completes vacuously.
     3. Otherwise the workflow keeps ``running``.
+
+    Accepts the serialized string form as well, so states loaded from
+    JSON/YAML behave identically; unknown values raise ``ValueError``.
     """
-    # Materialize once: the iterable is consumed by both checks below.
-    states = list(task_states)
+    # Coerce through the enum so identity checks below cannot miss a plain
+    # string ("failed" == TaskState.FAILED but is not the member), and so
+    # unknown values fail loudly instead of counting as in-flight work. The
+    # list also materializes the iterable consumed by both checks below.
+    states = [TaskState(state) for state in task_states]
     if any(state is TaskState.FAILED for state in states):
         return WorkflowState.FAILED
     if all(is_task_terminal(state) for state in states):

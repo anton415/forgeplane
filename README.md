@@ -151,6 +151,11 @@ which encodes the completion and failure rules for a *running* workflow:
 `paused` and `cancelled` are operator decisions and are never derived from
 task states.
 
+Both `derive_workflow_state` and the `tasks_may_progress` gate also accept
+the serialized string form of a state and coerce it through the enum, so
+values loaded from JSON/YAML behave identically to enum members; unknown
+values raise `ValueError` instead of being miscounted as in-flight work.
+
 Invariants that must never be violated (each is verified by
 `tests/test_workflow_states.py`):
 
