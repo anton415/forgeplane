@@ -75,6 +75,11 @@ The filesystem scanning logic is split into typed modules:
   renders the per-file detail plus the aggregate metrics through a `rich`
   table. The same `generate_eval_report` entry point covers both the
   in-memory (notebook, test) and the CSV-archive (CI) workflows.
+- `workflow/states.py` — deterministic state model for the upcoming workflow
+  engine: the `WorkflowState` and `TaskState` enums, the explicit transition
+  tables, transition validation that rejects anything not in the tables, and
+  the rules that derive a running workflow's state from its task states. See
+  [Workflow state model](#workflow-state-model) below.
 - `llm/client.py` — defines the `LLMClient` Protocol used by the reviewer
   and ships an `OpenAIChatClient` HTTP implementation that calls
   OpenAI-compatible Chat Completions endpoints with `response_format=json_object`
@@ -92,6 +97,74 @@ The filesystem scanning logic is split into typed modules:
 The Markdown section parser extracts the body of each expected `##` heading from a spec file and returns a `dict[str, str | None]` keyed by the expected section names: `Goal`, `Context`, `Acceptance Criteria`, `Risks`, `Open Questions`. Missing or empty sections collapse to `None`. Headings follow CommonMark ATX rules (up to three spaces of indent, an optional closing run of `#`s), and `##` lines that appear inside fenced code blocks are ignored. Sample inputs live in `examples/good_spec.md` and `examples/weak_spec.md`.
 
 The source tree is checked with `mypy` in strict mode.
+
+## Workflow state model
+
+Forgeplane is growing a small deterministic workflow engine. Its foundation —
+implemented in `forgeplane/workflow/states.py` — is a fixed state model with
+explicit transition tables. The model deliberately avoids BPMN/Camunda
+vocabulary: every state and every legal transition is enumerable, so the
+whole model is covered by exhaustive tests before DSL, persistence, API, or
+visual features are added on top.
+
+Workflow states and their valid transitions:
+
+| From | To |
+| --- | --- |
+| `draft` | `ready`, `cancelled` |
+| `ready` | `running`, `cancelled` |
+| `running` | `paused`, `completed`, `failed`, `cancelled` |
+| `paused` | `running`, `cancelled` |
+| `completed` | — (terminal) |
+| `failed` | — (terminal) |
+| `cancelled` | — (terminal) |
+
+Task states and their valid transitions:
+
+| From | To |
+| --- | --- |
+| `pending` | `ready`, `skipped` |
+| `ready` | `running`, `blocked`, `skipped` |
+| `running` | `completed`, `failed`, `blocked` |
+| `blocked` | `ready`, `failed`, `skipped` |
+| `completed` | — (terminal) |
+| `failed` | — (terminal) |
+| `skipped` | — (terminal) |
+
+Both enums are `StrEnum`s, so the serialized form equals the documented value
+(`WorkflowState.RUNNING == "running"`). `transition_workflow` and
+`transition_task` validate a move against the tables and raise
+`InvalidTransitionError` (a `ValueError` subclass carrying the offending
+`kind`, `current`, and `target`) for anything not listed — including
+self-transitions and any move out of a terminal state.
+
+Task state changes affect workflow state through `derive_workflow_state`,
+which encodes the completion and failure rules for a *running* workflow:
+
+1. **Failure (fail-fast):** any `failed` task fails the whole workflow
+   immediately, even if other tasks are still in flight.
+2. **Completion:** when every task is terminal (`completed` or `skipped`) and
+   none failed, the workflow is `completed`. A workflow with no tasks
+   completes vacuously.
+3. Otherwise the workflow keeps `running`.
+
+`paused` and `cancelled` are operator decisions and are never derived from
+task states.
+
+Both `derive_workflow_state` and the `tasks_may_progress` gate also accept
+the serialized string form of a state and coerce it through the enum, so
+values loaded from JSON/YAML behave identically to enum members; unknown
+values raise `ValueError` instead of being miscounted as in-flight work.
+
+Invariants that must never be violated (each is verified by
+`tests/test_workflow_states.py`):
+
+1. Terminal states have no outgoing transitions.
+2. Self-transitions are never valid; a transition always changes the state.
+3. Task states may only change while the owning workflow is `running`
+   (the `tasks_may_progress` gate).
+4. A workflow completes only when every task is terminal and none failed.
+5. A workflow derived from its tasks fails as soon as any task fails.
 
 ## Installation
 
@@ -371,12 +444,15 @@ forgeplane/
 │       ├── llm/
 │       │   ├── __init__.py
 │       │   └── client.py
-│       └── specs/
+│       ├── specs/
+│       │   ├── __init__.py
+│       │   ├── files.py
+│       │   ├── reviewer.py
+│       │   ├── scanner.py
+│       │   └── schemas.py
+│       └── workflow/
 │           ├── __init__.py
-│           ├── files.py
-│           ├── reviewer.py
-│           ├── scanner.py
-│           └── schemas.py
+│           └── states.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_cli_rich.py
@@ -385,7 +461,8 @@ forgeplane/
 │   ├── test_files.py
 │   ├── test_reviewer.py
 │   ├── test_scanner.py
-│   └── test_scoring.py
+│   ├── test_scoring.py
+│   └── test_workflow_states.py
 ├── examples/
 │   ├── good_spec.md
 │   └── weak_spec.md
@@ -458,12 +535,13 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client, and `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering.
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client, `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering, and `test_workflow_states.py` covers the workflow/task state model: the enum values, the transition tables, every valid transition, every invalid transition (asserted exhaustively as the complement over the full state-pair product), the terminal-state and no-self-transition invariants, the `tasks_may_progress` gate, and the completion/failure derivation rules.
 
 ## Roadmap
 
 Planned directions:
 
+- Build the MVP workflow engine on top of the state model (DSL, persistence, API).
 - Improve documentation scanning and validation.
 - Add checks for OpenAPI files.
 - Implement real API specification generation.
