@@ -42,6 +42,15 @@ _VALID_LOG_LEVELS: Final[frozenset[str]] = frozenset(
 # NETRC, ...) into the process environment and influence outbound LLM requests.
 SUPPORTED_ENV_KEYS: Final[tuple[str, ...]] = ("OPENAI_API_KEY", "LOG_LEVEL")
 
+# Truthy values for the ``PYTHON_DOTENV_DISABLED`` kill switch. ``load_dotenv``
+# honours this variable to skip ``.env`` loading entirely, but the
+# ``dotenv_values`` parser we use does not, so we replicate the check. The set
+# mirrors python-dotenv's own accepted values; we reimplement it rather than
+# import the library's private helper to avoid coupling to an internal symbol.
+_DOTENV_DISABLED_TRUTHY: Final[frozenset[str]] = frozenset(
+    {"1", "true", "t", "yes", "y"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -63,6 +72,17 @@ def _normalize_log_level(raw: str | None) -> str:
     if candidate in _VALID_LOG_LEVELS:
         return candidate
     return DEFAULT_LOG_LEVEL
+
+
+def _dotenv_disabled() -> bool:
+    """Return ``True`` when ``PYTHON_DOTENV_DISABLED`` requests skipping ``.env``.
+
+    Mirrors python-dotenv's ``load_dotenv`` kill switch so a CI or production
+    wrapper that sets this variable to keep a local ``.env`` from affecting
+    runtime configuration keeps working after the move to ``dotenv_values``.
+    """
+    value = os.environ.get("PYTHON_DOTENV_DISABLED")
+    return value is not None and value.casefold() in _DOTENV_DISABLED_TRUTHY
 
 
 def _resolve_setting(key: str, file_values: Mapping[str, str | None]) -> str | None:
@@ -95,7 +115,11 @@ def load_settings() -> Settings:
     # Forgeplane is installed into site-packages. It returns ``""`` when no file
     # is found; ``dotenv_values("")`` then yields an empty mapping, which keeps
     # CI safe when configuration arrives through real environment variables.
-    file_values = dotenv_values(find_dotenv(usecwd=True))
+    # ``PYTHON_DOTENV_DISABLED`` short-circuits the parse to an empty mapping so
+    # the file is ignored entirely, matching the old ``load_dotenv`` behaviour.
+    file_values: Mapping[str, str | None] = (
+        {} if _dotenv_disabled() else dotenv_values(find_dotenv(usecwd=True))
+    )
     # Read only the explicitly supported keys out of the parsed file; any other
     # entry is dropped here rather than promoted to a setting or the process
     # environment. ``SUPPORTED_ENV_KEYS`` is the single source of truth for that

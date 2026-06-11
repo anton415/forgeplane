@@ -43,6 +43,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # and run inside an empty cwd so python-dotenv finds no real .env file.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("LOG_LEVEL", raising=False)
+    # An ambient PYTHON_DOTENV_DISABLED would suppress .env parsing for every
+    # test in this module, so clear it for a predictable baseline.
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -252,3 +255,41 @@ def test_load_settings_process_env_overrides_dotenv(
     settings = load_settings()
     assert settings.openai_api_key == "from-process-env"
     assert settings.log_level == "ERROR"
+
+
+def test_load_settings_skips_dotenv_when_disable_flag_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # ``load_dotenv`` honours PYTHON_DOTENV_DISABLED as a kill switch; the
+    # dotenv_values parser does not, so load_settings must replicate it. With
+    # the flag set, a project .env must be ignored entirely even for supported
+    # keys, which is exactly what a CI/production wrapper relies on.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=from-untrusted-checkout\nLOG_LEVEL=debug\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+    # The file is ignored; defaults stand in for the absent process-env values.
+    assert settings.openai_api_key is None
+    assert settings.log_level == DEFAULT_LOG_LEVEL
+
+
+def test_load_settings_reads_dotenv_when_disable_flag_is_falsey(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # A non-truthy PYTHON_DOTENV_DISABLED value must not suppress loading; the
+    # accepted truthy set mirrors python-dotenv so "0" leaves parsing enabled.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "0")
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=from-file\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+    assert settings.openai_api_key == "from-file"

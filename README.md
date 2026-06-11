@@ -332,6 +332,11 @@ by constructing `OpenAIChatClient(..., trust_env=True)`. Together these protect
 the API key and the reviewed spec contents from being redirected or intercepted
 when Forgeplane is run inside an untrusted repository.
 
+To skip the project `.env` entirely — for example in CI or a production
+wrapper — set `PYTHON_DOTENV_DISABLED` to a truthy value (`1`, `true`, `t`,
+`yes`, `y`). Forgeplane then reads settings only from the real process
+environment.
+
 ## Usage
 
 ### Scan documentation
