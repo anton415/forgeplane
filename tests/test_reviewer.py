@@ -210,13 +210,14 @@ def test_parse_review_response_redacts_unexpected_extra_key(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # ``extra="forbid"`` rejects an unexpected key; the rogue key is
-    # provider-controlled, so even a key named after spec content must not be
-    # reflected wholesale into the error.
+    # provider-controlled, so a key named after spec content must not be
+    # reflected into the error at all — not even a short prefix of it.
     payload = json.dumps({"score": 80, _LEAK_MARKER * 5: "x"})
     with pytest.raises(LLMError) as exc_info:
         parse_review_response(payload)
     message = str(exc_info.value)
-    assert _LEAK_MARKER * 5 not in message
+    assert _LEAK_MARKER not in message
+    assert "<extra field>" in message
     assert _LEAK_MARKER not in caplog.text
 
 

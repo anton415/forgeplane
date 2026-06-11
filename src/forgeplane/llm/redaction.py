@@ -22,14 +22,23 @@ from typing import Final
 from pydantic import ValidationError
 
 # Upper bound on how many characters of a single error location we echo. Schema
-# field names are short, so this only bites when a provider returns an
-# unexpected — and possibly attacker-chosen — extra key, which must not be
-# reflected wholesale into an error message.
+# field names are short, so this is only a secondary guard against an
+# unexpectedly long location slipping through.
 _MAX_LOCATION_CHARS: Final[int] = 60
 
 # Suffix appended to any value we shorten so a reader can tell the original was
 # longer than what is shown.
 _TRUNCATION_MARKER: Final[str] = "…(truncated)"
+
+# Pydantic error types whose ``loc`` ends in a provider-supplied key rather than
+# a schema field name. The rejected key is the untrusted payload itself, so it
+# must never be echoed back — not even a short key or a truncated prefix of a
+# long one — into the redacted summary.
+_EXTRA_FIELD_ERROR_TYPES: Final[frozenset[str]] = frozenset({"extra_forbidden"})
+
+# Placeholder substituted for a rejected extra key so the summary still records
+# that an unexpected field was present without disclosing its name.
+_EXTRA_FIELD_PLACEHOLDER: Final[str] = "<extra field>"
 
 
 def summarize_payload_shape(value: object) -> str:
@@ -83,19 +92,25 @@ def summarize_validation_error(exc: ValidationError) -> str:
     """
     errors = exc.errors()
     summaries = [
-        f"{_redact_location(error['loc'])}: {error['type']}" for error in errors
+        f"{_redact_location(error['loc'], error['type'])}: {error['type']}"
+        for error in errors
     ]
     return f"{len(errors)} validation error(s): " + "; ".join(summaries)
 
 
-def _redact_location(location: tuple[str | int, ...]) -> str:
-    """Render a Pydantic error ``loc`` tuple, bounding its length.
+def _redact_location(location: tuple[str | int, ...], error_type: str) -> str:
+    """Render a Pydantic error ``loc`` tuple without echoing untrusted keys.
 
-    Most locations are short schema field names, but an ``extra_forbidden``
-    error carries the provider-supplied key, which could be attacker-chosen and
-    arbitrarily long; truncate the rendered path so it cannot be reflected
-    wholesale into the summary.
+    Schema field names and list indices are safe to surface — they identify
+    *which* part of our own schema failed. An ``extra_forbidden`` error is the
+    exception: its trailing element is the provider-supplied key, which is the
+    untrusted payload itself, so it is replaced with a fixed placeholder rather
+    than echoed (even short keys or prefixes of long keys would otherwise leak
+    reviewed-spec content). A length cap stays as a defensive backstop.
     """
+    if error_type in _EXTRA_FIELD_ERROR_TYPES and location:
+        # Keep any leading schema path for context, but never the rejected key.
+        location = (*location[:-1], _EXTRA_FIELD_PLACEHOLDER)
     rendered = ".".join(str(part) for part in location) or "<root>"
     if len(rendered) > _MAX_LOCATION_CHARS:
         return rendered[:_MAX_LOCATION_CHARS] + _TRUNCATION_MARKER

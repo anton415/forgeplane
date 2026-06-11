@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from forgeplane.llm.redaction import (
+    _redact_location,
     redact_json_decode_error,
     summarize_payload_shape,
     summarize_validation_error,
@@ -123,16 +124,38 @@ def test_summarize_validation_error_reports_nested_location() -> None:
     assert "notes.1" in summary
 
 
-def test_summarize_validation_error_truncates_long_extra_key() -> None:
-    # ``extra_forbidden`` carries the provider-supplied key in ``loc``; a long
-    # attacker-chosen key must be truncated rather than reflected wholesale.
+def test_summarize_validation_error_hides_short_extra_key() -> None:
+    # ``extra_forbidden`` carries the provider-supplied key in ``loc``. Even a
+    # short rogue key (well under the length cap) must not be echoed, since the
+    # key name itself can be reviewed-spec content.
+    with pytest.raises(ValidationError) as exc_info:
+        _Sample.model_validate({"score": 50, SECRET: "x"})
+    summary = summarize_validation_error(exc_info.value)
+    assert SECRET not in summary
+    # The summary still records that an unexpected field was rejected.
+    assert "<extra field>: extra_forbidden" in summary
+
+
+def test_summarize_validation_error_hides_long_extra_key() -> None:
+    # A long attacker-chosen key must not survive even as a truncated prefix.
     long_key = SECRET * 10
     with pytest.raises(ValidationError) as exc_info:
         _Sample.model_validate({"score": 50, long_key: "x"})
     summary = summarize_validation_error(exc_info.value)
-    assert long_key not in summary
-    assert "…(truncated)" in summary
+    assert SECRET not in summary
+    assert "<extra field>" in summary
     assert "extra_forbidden" in summary
+
+
+def test_redact_location_caps_long_schema_path() -> None:
+    # Backstop guard: a legitimately long (non-extra) schema location is bounded
+    # by the length cap so an unusually deep path cannot bloat the summary. The
+    # truncation marker signals that the rendered path was cut.
+    rendered = _redact_location(("recommendations", "a" * 80), "string_type")
+    marker = "…(truncated)"
+    assert rendered.endswith(marker)
+    # The path kept before the marker is capped at the 60-char budget.
+    assert len(rendered) - len(marker) == 60
 
 
 def test_summarize_validation_error_counts_multiple_errors() -> None:
