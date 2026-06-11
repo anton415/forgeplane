@@ -12,10 +12,11 @@ startup so every Forgeplane subpackage can emit log records through
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import dotenv_values, find_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -33,6 +34,21 @@ DEFAULT_LOG_LEVEL: Final[str] = "INFO"
 # the string directly to ``Logger.setLevel`` without an extra translation step.
 _VALID_LOG_LEVELS: Final[frozenset[str]] = frozenset(
     {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+)
+
+# The only keys Forgeplane reads from a project ``.env``. Everything else in
+# the file is ignored so an untrusted documentation repository cannot smuggle
+# ambient transport variables (HTTP(S)_PROXY, SSL_CERT_FILE, REQUESTS_CA_BUNDLE,
+# NETRC, ...) into the process environment and influence outbound LLM requests.
+SUPPORTED_ENV_KEYS: Final[tuple[str, ...]] = ("OPENAI_API_KEY", "LOG_LEVEL")
+
+# Truthy values for the ``PYTHON_DOTENV_DISABLED`` kill switch. ``load_dotenv``
+# honours this variable to skip ``.env`` loading entirely, but the
+# ``dotenv_values`` parser we use does not, so we replicate the check. The set
+# mirrors python-dotenv's own accepted values; we reimplement it rather than
+# import the library's private helper to avoid coupling to an internal symbol.
+_DOTENV_DISABLED_TRUTHY: Final[frozenset[str]] = frozenset(
+    {"1", "true", "t", "yes", "y"}
 )
 
 
@@ -58,20 +74,60 @@ def _normalize_log_level(raw: str | None) -> str:
     return DEFAULT_LOG_LEVEL
 
 
+def _dotenv_disabled() -> bool:
+    """Return ``True`` when ``PYTHON_DOTENV_DISABLED`` requests skipping ``.env``.
+
+    Mirrors python-dotenv's ``load_dotenv`` kill switch so a CI or production
+    wrapper that sets this variable to keep a local ``.env`` from affecting
+    runtime configuration keeps working after the move to ``dotenv_values``.
+    """
+    value = os.environ.get("PYTHON_DOTENV_DISABLED")
+    return value is not None and value.casefold() in _DOTENV_DISABLED_TRUTHY
+
+
+def _resolve_setting(key: str, file_values: Mapping[str, str | None]) -> str | None:
+    """Return the effective value for ``key`` honouring environment precedence.
+
+    The real process environment wins over the ``.env`` file so an operator can
+    intentionally override a file value (the documented precedence, previously
+    provided by ``load_dotenv(override=False)``). A key present in the process
+    environment is returned as-is — even when empty — so callers see the same
+    value they would have read straight from ``os.environ``.
+    """
+    if key in os.environ:
+        return os.environ[key]
+    return file_values.get(key)
+
+
 def load_settings() -> Settings:
-    """Load environment variables from ``.env`` and return parsed settings."""
+    """Load supported Forgeplane settings from ``.env`` and the environment.
+
+    The ``.env`` file is *parsed* with :func:`dotenv_values` rather than loaded
+    with ``load_dotenv``: the returned mapping is read in-process and is never
+    written back into ``os.environ``. This keeps a project-local ``.env`` from
+    mutating the process environment, so unsupported keys (proxy or certificate
+    variables, for example) in an untrusted documentation repository cannot
+    reach HTTP clients that would otherwise inherit them.
+    """
     # ``find_dotenv(usecwd=True)`` anchors the search at the user's current
     # working directory rather than the package install location, so a ``.env``
     # placed next to where ``forgeplane`` was invoked is picked up even when
-    # Forgeplane is installed into site-packages.
-    # ``load_dotenv`` is a no-op when no file is found, which keeps CI safe
-    # when configuration arrives through real environment variables.
-    # ``override=False`` (the default) preserves values already set in the
-    # process environment.
-    load_dotenv(find_dotenv(usecwd=True))
+    # Forgeplane is installed into site-packages. It returns ``""`` when no file
+    # is found; ``dotenv_values("")`` then yields an empty mapping, which keeps
+    # CI safe when configuration arrives through real environment variables.
+    # ``PYTHON_DOTENV_DISABLED`` short-circuits the parse to an empty mapping so
+    # the file is ignored entirely, matching the old ``load_dotenv`` behaviour.
+    file_values: Mapping[str, str | None] = (
+        {} if _dotenv_disabled() else dotenv_values(find_dotenv(usecwd=True))
+    )
+    # Read only the explicitly supported keys out of the parsed file; any other
+    # entry is dropped here rather than promoted to a setting or the process
+    # environment. ``SUPPORTED_ENV_KEYS`` is the single source of truth for that
+    # allow-list.
+    resolved = {key: _resolve_setting(key, file_values) for key in SUPPORTED_ENV_KEYS}
     return Settings(
-        openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
-        log_level=_normalize_log_level(os.environ.get("LOG_LEVEL")),
+        openai_api_key=resolved["OPENAI_API_KEY"] or None,
+        log_level=_normalize_log_level(resolved["LOG_LEVEL"]),
     )
 
 

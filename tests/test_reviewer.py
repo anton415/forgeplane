@@ -469,6 +469,54 @@ def test_openai_client_creates_and_closes_default_http_client(
     assert close_calls == [True]
 
 
+def _capture_default_client_kwargs(
+    monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]
+) -> None:
+    # Replace ``httpx.Client`` with a factory that records the kwargs the
+    # client is constructed with, then returns a real client wired to a
+    # MockTransport so ``complete_json`` still completes a round-trip.
+    real_client_cls = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"score": 50})}}]},
+        )
+
+    def fake_client_factory(*args: object, **kwargs: object) -> httpx.Client:
+        captured.update(kwargs)
+        return real_client_cls(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr("forgeplane.llm.client.httpx.Client", fake_client_factory)
+
+
+def test_openai_client_default_transport_disables_trust_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Security regression guard (issue #77): the auto-created transport must run
+    # with ``trust_env=False`` so proxy or certificate variables that leaked
+    # from an untrusted project directory cannot redirect or intercept the
+    # outbound request, which carries the API key and the reviewed spec.
+    captured: dict[str, object] = {}
+    _capture_default_client_kwargs(monkeypatch, captured)
+    client = OpenAIChatClient(api_key="sk-test")
+    client.complete_json([{"role": "user", "content": "hi"}])
+    assert captured["trust_env"] is False
+
+
+def test_openai_client_trust_env_opt_in_is_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An operator who genuinely runs behind a corporate proxy can opt back into
+    # ambient transport configuration; the explicit flag must reach the
+    # underlying httpx client unchanged.
+    captured: dict[str, object] = {}
+    _capture_default_client_kwargs(monkeypatch, captured)
+    client = OpenAIChatClient(api_key="sk-test", trust_env=True)
+    client.complete_json([{"role": "user", "content": "hi"}])
+    assert captured["trust_env"] is True
+
+
 # ---------------------------------------------------------------------------
 # CLI rendering helpers
 # ---------------------------------------------------------------------------

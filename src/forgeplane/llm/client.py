@@ -154,6 +154,11 @@ class OpenAIChatClient:
     model is forced to return a JSON document. Schema validation happens in
     the reviewer module via Pydantic; this layer only guarantees that the
     payload is syntactically a JSON object.
+
+    By default the auto-created transport runs with ``trust_env=False`` so the
+    LLM request path never implicitly trusts proxy or certificate variables
+    that may have been planted in an untrusted project directory. Pass
+    ``trust_env=True`` to opt back into ambient transport configuration.
     """
 
     def __init__(
@@ -163,6 +168,7 @@ class OpenAIChatClient:
         model: str = DEFAULT_MODEL,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        trust_env: bool = False,
         client: httpx.Client | None = None,
     ) -> None:
         # Empty keys are rejected early so a misconfigured ``.env`` fails at
@@ -175,6 +181,14 @@ class OpenAIChatClient:
         # slash regardless of how the user configured ``base_url``.
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        # ``trust_env`` controls whether the auto-created httpx client honours
+        # ambient transport variables (HTTP(S)_PROXY, NO_PROXY, SSL_CERT_FILE,
+        # SSLKEYLOGFILE, .netrc). It defaults to ``False`` so a proxy or
+        # certificate variable that leaked from an untrusted project directory
+        # cannot silently redirect or intercept outbound LLM requests carrying
+        # the API key and reviewed spec contents. An operator who genuinely
+        # runs Forgeplane behind a corporate proxy can opt back in explicitly.
+        self._trust_env = trust_env
         # ``client`` is exposed so tests can inject an ``httpx.Client`` wired
         # to ``httpx.MockTransport``; production callers leave it ``None`` and
         # the client is constructed on demand inside ``complete_json``.
@@ -214,7 +228,9 @@ class OpenAIChatClient:
         }
         _logger.debug("Calling LLM %s at %s", self._model, url)
         try:
-            client = self._client or httpx.Client(timeout=self._timeout)
+            client = self._client or httpx.Client(
+                timeout=self._timeout, trust_env=self._trust_env
+            )
             try:
                 response = client.post(url, headers=headers, json=payload)
                 # Split 429/5xx from other HTTP errors so the retry policy
