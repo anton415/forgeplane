@@ -1,0 +1,13 @@
+Redact rejected extra-field keys instead of echoing them
+
+The extra_forbidden branch of summarize_validation_error still copied the
+provider-supplied key from error['loc'] into the summary (up to the 60-char
+cap), so short rogue keys — or a truncated prefix of a long one — could leak
+reviewed-spec content into the LLMError message and logs.
+
+Replace the rejected key with a fixed "<extra field>" placeholder for
+extra_forbidden errors, keeping any leading schema path for context. The length
+cap stays as a defensive backstop for unusually long legitimate schema paths
+(now covered by a direct unit test).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>

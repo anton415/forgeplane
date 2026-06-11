@@ -5,6 +5,7 @@
 
 import io
 import json
+import logging
 from pathlib import Path
 
 import httpx
@@ -166,6 +167,58 @@ def test_parse_review_response_raises_on_schema_violation() -> None:
     payload = json.dumps({"score": 200})
     with pytest.raises(LLMError, match="SpecReview schema"):
         parse_review_response(payload)
+
+
+# A recognisable marker standing in for reviewed spec or prompt content that a
+# malformed/attacker-influenced response could try to smuggle into an error.
+# No user-facing error string may contain it (issue #78).
+_LEAK_MARKER = "LEAKED-SPEC-CONTENT-zzz999"
+
+
+def test_parse_review_response_redacts_malformed_json(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Invalid JSON whose raw bytes embed the secret must surface as an LLMError
+    # that names the failure mode without echoing the malformed document.
+    payload = f'{{"score": "{_LEAK_MARKER}" broken'
+    with pytest.raises(LLMError) as exc_info:
+        parse_review_response(payload)
+    message = str(exc_info.value)
+    assert "valid JSON" in message
+    assert _LEAK_MARKER not in message
+    assert _LEAK_MARKER not in caplog.text
+
+
+def test_parse_review_response_redacts_schema_input_value(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A schema violation where the offending value is prompt-derived text: the
+    # error must keep the field path and category but drop the raw input value
+    # that Pydantic would otherwise embed.
+    payload = json.dumps({"score": _LEAK_MARKER})
+    with pytest.raises(LLMError) as exc_info:
+        parse_review_response(payload)
+    message = str(exc_info.value)
+    assert "SpecReview schema" in message
+    # Diagnostic context is retained: the failing field and a stable category.
+    assert "score" in message
+    assert _LEAK_MARKER not in message
+    assert _LEAK_MARKER not in caplog.text
+
+
+def test_parse_review_response_redacts_unexpected_extra_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # ``extra="forbid"`` rejects an unexpected key; the rogue key is
+    # provider-controlled, so a key named after spec content must not be
+    # reflected into the error at all — not even a short prefix of it.
+    payload = json.dumps({"score": 80, _LEAK_MARKER * 5: "x"})
+    with pytest.raises(LLMError) as exc_info:
+        parse_review_response(payload)
+    message = str(exc_info.value)
+    assert _LEAK_MARKER not in message
+    assert "<extra field>" in message
+    assert _LEAK_MARKER not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +455,53 @@ def test_openai_client_wraps_missing_choices_as_llm_error() -> None:
             client.complete_json([{"role": "user", "content": "hi"}])
     finally:
         http_client.close()
+
+
+def test_openai_client_redacts_unexpected_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An unexpected provider response is attacker-/provider-controlled: when the
+    # expected choices path is missing, the resulting LLMError must describe the
+    # payload shape only, never echo the decoded values back to the caller.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": _LEAK_MARKER, "detail": _LEAK_MARKER})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    try:
+        client = OpenAIChatClient(api_key="sk-test", client=http_client)
+        with pytest.raises(LLMError) as exc_info:
+            client.complete_json([{"role": "user", "content": "hi"}])
+    finally:
+        http_client.close()
+    message = str(exc_info.value)
+    assert "choices" in message
+    # The shape summary survives, but neither the values nor the rogue keys do.
+    assert "JSON object with 2 field(s)" in message
+    assert _LEAK_MARKER not in message
+    assert _LEAK_MARKER not in caplog.text
+
+
+def test_openai_client_redacts_malformed_json_body(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A 2xx body that is not JSON reaches the client as a decode error whose
+    # document holds the untrusted bytes; the LLMError must not reflect them.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=f"<html>{_LEAK_MARKER}</html>")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    try:
+        client = OpenAIChatClient(api_key="sk-test", client=http_client)
+        with pytest.raises(LLMError) as exc_info:
+            client.complete_json([{"role": "user", "content": "hi"}])
+    finally:
+        http_client.close()
+    message = str(exc_info.value)
+    assert "not valid JSON" in message
+    assert _LEAK_MARKER not in message
+    assert _LEAK_MARKER not in caplog.text
 
 
 def test_openai_client_wraps_non_json_body_as_llm_error() -> None:
@@ -647,6 +747,46 @@ def test_cli_review_surfaces_llm_error_as_bad_parameter(
     runner = CliRunner()
     result = runner.invoke(app, ["review", str(spec_path)])
     assert result.exit_code != 0
+
+
+def test_cli_review_does_not_leak_response_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end guard (issue #78): a malformed response whose value carries
+    # reviewed-spec text must fail the command without that text reaching the
+    # terminal output or the logged error line.
+    spec_path = tmp_path / "todo-module.md"
+    spec_path.write_text("## Goal\nShip it.\n", encoding="utf-8")
+    # ``score`` must be an int; a string forces a schema error whose offending
+    # value is the secret marker the CLI must not echo.
+    _install_fake_client(monkeypatch, {"score": _LEAK_MARKER})
+
+    # Capture exactly what the CLI logs by swapping in a logger wired to an
+    # in-memory handler; the command logs the error via ``%s`` so this records
+    # the same string a real run would emit through the rich handler.
+    logged: list[str] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            logged.append(record.getMessage())
+
+    def fake_configure_logging(*args: object, **kwargs: object) -> logging.Logger:
+        logger = logging.getLogger("forgeplane.test-redaction")
+        logger.handlers = [_ListHandler()]
+        logger.setLevel("DEBUG")
+        logger.propagate = False
+        return logger
+
+    monkeypatch.setattr(cli, "configure_logging", fake_configure_logging)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["review", str(spec_path)])
+    assert result.exit_code != 0
+    # Neither the rendered CLI output nor any logged line may contain the secret.
+    assert _LEAK_MARKER not in result.output
+    assert _LEAK_MARKER not in "\n".join(logged)
+    # The diagnostic is still useful: a failure was logged for the bad response.
+    assert any("LLM review failed" in line for line in logged)
 
 
 def test_cli_review_missing_api_key_raises(

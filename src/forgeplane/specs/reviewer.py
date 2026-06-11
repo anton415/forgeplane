@@ -18,6 +18,10 @@ from pydantic import ValidationError
 
 from forgeplane.core.config import get_logger
 from forgeplane.llm.client import ChatMessage, LLMClient, LLMError
+from forgeplane.llm.redaction import (
+    redact_json_decode_error,
+    summarize_validation_error,
+)
 from forgeplane.specs.schemas import SpecReview
 
 # Module-level logger so review steps surface under --verbose.
@@ -86,17 +90,24 @@ def parse_review_response(payload: str, *, file: str | None = None) -> SpecRevie
     except json.JSONDecodeError as exc:
         # The OpenAI client requests JSON mode, but other providers might
         # not enforce it; surface the decoding failure as an LLMError so the
-        # CLI can render a single, stable error class to the user.
-        raise LLMError(f"LLM did not return valid JSON: {exc}") from exc
+        # CLI can render a single, stable error class to the user. The raw
+        # payload is untrusted, so only the redacted reason/position is shown.
+        raise LLMError(
+            f"LLM did not return valid JSON: {redact_json_decode_error(exc)}"
+        ) from exc
 
     try:
         review = SpecReview.model_validate(data)
     except ValidationError as exc:
-        # Surface the validation error inside an LLMError so callers can
-        # catch a single type, while ``__cause__`` keeps the Pydantic detail
-        # available for debugging.
+        # Surface the validation error inside an LLMError so callers can catch a
+        # single type. Pydantic's default rendering embeds the failing
+        # ``input_value`` — which here is provider- or prompt-derived text — so
+        # only a redacted summary (field path + error category) is exposed.
+        # ``__cause__`` keeps the full Pydantic detail available for internal
+        # debugging without leaking it into stderr or logs by default.
         raise LLMError(
-            f"LLM JSON does not match the SpecReview schema:\n{exc}"
+            "LLM JSON does not match the SpecReview schema "
+            f"({summarize_validation_error(exc)})"
         ) from exc
 
     if file is not None and review.file is None:

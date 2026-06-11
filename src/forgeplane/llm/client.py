@@ -30,6 +30,10 @@ from tenacity import (
 )
 
 from forgeplane.core.config import get_logger
+from forgeplane.llm.redaction import (
+    redact_json_decode_error,
+    summarize_payload_shape,
+)
 
 # Module-level logger so request lifecycle events surface under --verbose.
 _logger = get_logger(__name__)
@@ -259,7 +263,12 @@ class OpenAIChatClient:
         except httpx.HTTPError as exc:
             raise LLMError(f"LLM HTTP call failed: {exc}") from exc
         except json.JSONDecodeError as exc:
-            raise LLMError(f"LLM response was not valid JSON: {exc}") from exc
+            # The raw response body is attacker- or provider-controlled, so only
+            # the redacted reason/position is surfaced; ``__cause__`` keeps the
+            # full ``json.JSONDecodeError`` available for internal debugging.
+            raise LLMError(
+                f"LLM response was not valid JSON: {redact_json_decode_error(exc)}"
+            ) from exc
 
         try:
             # OpenAI's Chat Completions returns the model output under
@@ -268,6 +277,10 @@ class OpenAIChatClient:
             # place.
             return str(data["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:
+            # An unexpected response shape could carry provider- or prompt-
+            # controlled text, so report only the missing field path and a
+            # content-free shape summary instead of the decoded payload.
             raise LLMError(
-                f"LLM response missing choices[0].message.content: {data!r}"
+                "LLM response missing choices[0].message.content; "
+                f"received {summarize_payload_shape(data)}"
             ) from exc
