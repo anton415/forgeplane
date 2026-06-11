@@ -62,7 +62,7 @@ The codebase also includes early Pydantic schemas for API readiness checks:
 The filesystem scanning logic is split into typed modules:
 
 - `core/files.py` — recursively discovers Markdown spec files and exposes a typed UTF-8 read helper used by the spec scanners.
-- `core/config.py` — loads runtime settings (`OPENAI_API_KEY`, `LOG_LEVEL`) from `.env` via `python-dotenv` and configures the Forgeplane logger with a `rich` handler.
+- `core/config.py` — loads runtime settings (`OPENAI_API_KEY`, `LOG_LEVEL`) from `.env` via `python-dotenv` and configures the Forgeplane logger with a `rich` handler. The `.env` file is *parsed* (not loaded into `os.environ`), so only the supported keys are read and an untrusted project `.env` cannot inject ambient transport variables into the process environment.
 - `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic.
 - `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI and parses Markdown spec sections.
 - `specs/reviewer.py` — assembles the review prompt, dispatches the spec to
@@ -291,7 +291,7 @@ forgeplane --help
 
 ## Configuration
 
-Forgeplane loads runtime settings from a `.env` file in the current working
+Forgeplane reads runtime settings from a `.env` file in the current working
 directory via `python-dotenv`. Variables already set in the process
 environment take precedence over the file, which keeps CI configuration
 stable when a `.env` file is missing.
@@ -314,6 +314,23 @@ Supported variables:
 
 Logging is wired to `rich.logging.RichHandler`, so log records render with
 the same styling as the rest of the CLI output.
+
+### `.env` isolation
+
+`.env` is **parsed**, not loaded into `os.environ`: Forgeplane reads only the
+two supported keys above and ignores everything else in the file. This means a
+`.env` placed in an untrusted or third-party documentation repository cannot
+inject ambient transport variables — proxy settings such as `HTTP_PROXY` /
+`HTTPS_PROXY` / `ALL_PROXY`, or certificate settings such as `SSL_CERT_FILE` /
+`REQUESTS_CA_BUNDLE` — into the process environment.
+
+As a second layer of defence, the OpenAI HTTP client runs with
+`trust_env=False` by default, so it does not implicitly honour proxy or
+certificate variables from the surrounding environment for outbound LLM
+requests. Operators who genuinely run behind a corporate proxy can opt back in
+by constructing `OpenAIChatClient(..., trust_env=True)`. Together these protect
+the API key and the reviewed spec contents from being redirected or intercepted
+when Forgeplane is run inside an untrusted repository.
 
 ## Usage
 

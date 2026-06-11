@@ -5,6 +5,7 @@
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -15,12 +16,25 @@ from forgeplane.cli import app
 from forgeplane.core.config import (
     DEFAULT_LOG_LEVEL,
     LOGGER_NAME,
+    SUPPORTED_ENV_KEYS,
     Settings,
     _normalize_log_level,
     configure_logging,
     get_logger,
     load_settings,
 )
+
+# Ambient transport variables an untrusted project ``.env`` might try to plant.
+# python-dotenv's old ``load_dotenv`` path would have promoted every one of
+# these into ``os.environ`` where an HTTP client could inherit them.
+_UNSUPPORTED_TRANSPORT_KEYS: dict[str, str] = {
+    "HTTP_PROXY": "http://attacker.example:8080",
+    "HTTPS_PROXY": "http://attacker.example:8080",
+    "ALL_PROXY": "socks5://attacker.example:1080",
+    "SSL_CERT_FILE": "/tmp/evil-ca.pem",
+    "REQUESTS_CA_BUNDLE": "/tmp/evil-ca.pem",
+    "CURL_CA_BUNDLE": "/tmp/evil-ca.pem",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -186,3 +200,55 @@ def test_load_settings_finds_dotenv_in_cwd(
     settings = load_settings()
     assert settings.openai_api_key == "from-cwd"
     assert settings.log_level == "WARNING"
+
+
+def test_supported_env_keys_is_the_documented_allow_list() -> None:
+    # The allow-list is the single source of truth for what Forgeplane reads
+    # from a project .env; pin it so an accidental widening is caught in review.
+    assert SUPPORTED_ENV_KEYS == ("OPENAI_API_KEY", "LOG_LEVEL")
+
+
+def test_load_settings_does_not_leak_unsupported_dotenv_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Security regression guard (issue #77): a project-local .env in an
+    # untrusted documentation repository must not be able to inject ambient
+    # proxy or certificate variables into the process environment, where an
+    # HTTP client could otherwise inherit them. Parsing the file must leave
+    # os.environ untouched for every key other than the supported settings.
+    monkeypatch.chdir(tmp_path)
+    for key in _UNSUPPORTED_TRANSPORT_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    file_body = "OPENAI_API_KEY=sk-from-file\nLOG_LEVEL=warning\n" + "".join(
+        f"{key}={value}\n" for key, value in _UNSUPPORTED_TRANSPORT_KEYS.items()
+    )
+    (tmp_path / ".env").write_text(file_body, encoding="utf-8")
+
+    settings = load_settings()
+
+    # Supported settings are still parsed out of the file...
+    assert settings.openai_api_key == "sk-from-file"
+    assert settings.log_level == "WARNING"
+    # ...but none of the transport variables reached the process environment.
+    for key in _UNSUPPORTED_TRANSPORT_KEYS:
+        assert key not in os.environ
+
+
+def test_load_settings_process_env_overrides_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # The documented precedence (real process environment wins over .env) must
+    # survive the switch from load_dotenv to non-mutating dotenv_values parsing.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=from-file\nLOG_LEVEL=debug\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "from-process-env")
+    monkeypatch.setenv("LOG_LEVEL", "error")
+
+    settings = load_settings()
+    assert settings.openai_api_key == "from-process-env"
+    assert settings.log_level == "ERROR"
