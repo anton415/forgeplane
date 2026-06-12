@@ -24,6 +24,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.table import Table
+from rich.text import Text
 
 from forgeplane.core.config import configure_logging, load_settings
 from forgeplane.llm.client import DEFAULT_MODEL, LLMClient, LLMError, OpenAIChatClient
@@ -100,13 +101,18 @@ def print_text_report(report: ScanReport, target: Console | None = None) -> None
     table.add_column("Metric")
     table.add_column("Value")
 
-    table.add_row("Path", report["path"])
+    # Paths, extensions, and filenames come from the scanned directory and are
+    # therefore user-shaped: render them as literal ``Text`` so rich markup or
+    # terminal hyperlinks embedded in a filename are never interpreted.
+    table.add_row("Path", Text(report["path"]))
     table.add_row("Files", str(report["files_count"]))
     table.add_row("Total size", f"{report['total_size_bytes']} bytes")
     table.add_row(
         "Extensions",
-        ", ".join(f"{ext}: {count}" for ext, count in report["extensions"].items())
-        or "none",
+        Text(
+            ", ".join(f"{ext}: {count}" for ext, count in report["extensions"].items())
+            or "none"
+        ),
     )
 
     out.print(table)
@@ -115,7 +121,7 @@ def print_text_report(report: ScanReport, target: Console | None = None) -> None
         # Print the relative file list below the summary table.
         out.print("\nFiles:")
         for file in report["files"]:
-            out.print(f"  - {file}")
+            out.print(Text(f"  - {file}"))
 
 
 def build_readiness_table(results: list[ScanResult]) -> Table:
@@ -137,11 +143,14 @@ def build_readiness_table(results: list[ScanResult]) -> Table:
         score_style = score_color(result.score)
         readiness_style = readiness_color(result.readiness)
         # Apply colours via rich markup so a downstream ``Console`` capture
-        # (HTML/SVG export, recording) preserves the styling.
+        # (HTML/SVG export, recording) preserves the styling. Markup is safe
+        # here because scores, readiness labels, and section names are
+        # produced by Forgeplane itself; the filename is the one user-shaped
+        # value, so it renders as literal ``Text``.
         score_cell = f"[bold {score_style}]{result.score}[/]"
         readiness_cell = f"[bold {readiness_style}]{result.readiness}[/]"
         missing_cell = ", ".join(result.missing) if result.missing else "[green]none[/]"
-        table.add_row(result.file, score_cell, missing_cell, readiness_cell)
+        table.add_row(Text(result.file), score_cell, missing_cell, readiness_cell)
 
     return table
 
@@ -255,10 +264,16 @@ def build_review_table(review: SpecReview) -> Table:
     """Render a :class:`SpecReview` as a two-column rich Table."""
     # ``show_lines=True`` keeps multi-line bullet lists visually separated so
     # users can scan categories quickly when several findings line up.
-    title = f"Spec review · {review.file}" if review.file is not None else "Spec review"
+    # The filename in the title is user-shaped (and, for inline reviews,
+    # possibly model-supplied): building the title as ``Text`` keeps any rich
+    # markup or terminal hyperlink inside it literal. The bold style is set on
+    # the ``Text`` directly because ``title_style`` only applies to plain
+    # strings.
+    title_body = (
+        f"Spec review · {review.file}" if review.file is not None else "Spec review"
+    )
     table = Table(
-        title=title,
-        title_style="bold",
+        title=Text(title_body, style="bold"),
         header_style="bold cyan",
         show_lines=True,
     )
@@ -286,9 +301,12 @@ def build_review_table(review: SpecReview) -> Table:
 def _add_review_findings(table: Table, label: str, items: list[str]) -> None:
     """Append a category row that bullet-lists ``items`` under ``label``."""
     if not items:
+        # The placeholder markup is a trusted constant, unlike the findings.
         table.add_row(label, "[green]none[/]")
         return
-    body = "\n".join(f"• {item}" for item in items)
+    # Findings are raw LLM output: render them as literal ``Text`` so markup
+    # and terminal hyperlinks smuggled into a finding are never interpreted.
+    body = Text("\n".join(f"• {item}" for item in items))
     table.add_row(label, body)
 
 

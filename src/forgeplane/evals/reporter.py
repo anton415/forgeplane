@@ -23,6 +23,7 @@ from typing import Final
 import pandas as pd
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from forgeplane.core.config import get_logger
 from forgeplane.specs.schemas import SpecReview
@@ -53,6 +54,13 @@ DATAFRAME_COLUMNS: Final[tuple[str, ...]] = (
 # Filename-friendly timestamp pattern shared with the scan CLI so archived
 # artifacts from both pipelines sort together in chronological order.
 _TIMESTAMP_FORMAT: Final[str] = "%Y%m%dT%H%M%SZ"
+
+# Leading characters that spreadsheet applications interpret as the start of
+# a formula (or, for CR/LF/tab, as cell-structure control). A review filename
+# is model-influenced text, so a cell beginning with one of these could
+# execute as a formula when the eval CSV artifact is opened in Excel or
+# LibreOffice (issue #79).
+_CSV_FORMULA_PREFIXES: Final[tuple[str, ...]] = ("=", "+", "-", "@", "\t", "\r", "\n")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +155,43 @@ def _build_eval_filename(*, now: datetime | None = None) -> str:
     return f"eval_{moment.strftime(_TIMESTAMP_FORMAT)}.csv"
 
 
+def _neutralize_csv_cell(value: str) -> str:
+    """Defuse spreadsheet formula injection in one CSV cell.
+
+    Prefixing a single quote is the OWASP-recommended mitigation: spreadsheet
+    applications then treat the cell as literal text instead of evaluating
+    ``=HYPERLINK(...)``-style payloads. Benign values (no metacharacter in the
+    first position) pass through unchanged so ordinary filenames stay clean.
+    """
+    if value.startswith(_CSV_FORMULA_PREFIXES):
+        return f"'{value}"
+    return value
+
+
+def _neutralize_csv_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of ``df`` with every string cell formula-neutralized.
+
+    Only string values are rewritten; numeric columns cannot carry a formula
+    prefix and stay byte-identical in the artifact. The input DataFrame is
+    left untouched so in-memory analysis keeps the raw values.
+    """
+    safe = df.copy()
+    for column in safe.columns:
+        # Rewrite any column that may carry strings: the pandas 3 ``str``
+        # dtype plus every ``object`` column. The explicit ``object`` check
+        # matters because ``is_string_dtype`` infers ``object`` columns from
+        # their values and would skip a mixed column (strings alongside other
+        # values) entirely; the ``isinstance`` guard below then skips the
+        # individual non-string cells such a column may carry.
+        if safe[column].dtype == object or pd.api.types.is_string_dtype(safe[column]):
+            safe[column] = safe[column].map(
+                lambda cell: (
+                    _neutralize_csv_cell(cell) if isinstance(cell, str) else cell
+                )
+            )
+    return safe
+
+
 def save_eval_csv(
     df: pd.DataFrame,
     output_dir: Path,
@@ -158,13 +203,17 @@ def save_eval_csv(
     The directory is created if it does not exist. The returned path can be
     archived by CI as a build artifact so consecutive runs build up a history
     of prompt quality without anyone wiring a database.
+
+    String cells that begin with a spreadsheet formula metacharacter are
+    neutralized with a leading single quote before the write, so opening the
+    artifact in Excel/LibreOffice cannot execute a model-injected formula.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / _build_eval_filename(now=now)
     # ``index=False`` keeps the CSV column layout aligned with
     # :data:`DATAFRAME_COLUMNS`; otherwise pandas would inject an extra
     # unnamed index column that downstream consumers would have to skip.
-    df.to_csv(target, index=False)
+    _neutralize_csv_dataframe(df).to_csv(target, index=False)
     _logger.info("Eval CSV saved to %s", target)
     return target
 
@@ -218,7 +267,10 @@ def build_eval_table(df: pd.DataFrame, summary: EvalSummary) -> Table:
         strict=True,
     ):
         table.add_row(
-            file,
+            # Filenames are model-influenced text; ``Text`` renders them as
+            # literal characters so rich markup and terminal hyperlinks they
+            # may contain are never interpreted (issue #79).
+            Text(file),
             str(score),
             str(ambiguities),
             str(missing_ac),

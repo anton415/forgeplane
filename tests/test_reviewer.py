@@ -150,11 +150,20 @@ def test_parse_review_response_validates_and_attaches_file() -> None:
     assert review.ambiguities == ["the term 'fast' is undefined"]
 
 
-def test_parse_review_response_keeps_file_when_llm_provides_it() -> None:
-    # When the LLM returns a ``file`` field, it should not be overwritten by
-    # the path passed at call time.
+def test_parse_review_response_prefers_caller_file_over_llm_field() -> None:
+    # A response may claim a different source file to spoof the report
+    # (issue #79). The local caller-provided path is the source of truth and
+    # must always override the model-supplied value.
     payload = json.dumps({"score": 50, "file": "from-llm.md"})
     review = parse_review_response(payload, file="from-cli.md")
+    assert review.file == "from-cli.md"
+
+
+def test_parse_review_response_keeps_llm_file_for_inline_reviews() -> None:
+    # Without a caller-provided path there is no local truth to prefer; the
+    # schema-validated value is retained and neutralised at render time.
+    payload = json.dumps({"score": 50, "file": "from-llm.md"})
+    review = parse_review_response(payload)
     assert review.file == "from-llm.md"
 
 
@@ -252,6 +261,19 @@ def test_review_spec_file_reads_path_and_attaches_name(tmp_path: Path) -> None:
     # The reviewer must have forwarded the on-disk content into the prompt.
     body = fake.calls[0][1]["content"]
     assert "Provide a todo API." in body
+
+
+def test_review_spec_file_overrides_model_supplied_file(tmp_path: Path) -> None:
+    # End-to-end spoofing guard (issue #79): when the spec is read from disk,
+    # a ``file`` value injected into the response — here a spreadsheet formula
+    # payload — must never displace the on-disk filename.
+    spec_path = tmp_path / "todo-module.md"
+    spec_path.write_text("## Goal\nShip it.\n", encoding="utf-8")
+    fake = FakeLLM(
+        json.dumps({"score": 80, "file": '=HYPERLINK("http://evil.example","open")'})
+    )
+    review = review_spec_file(spec_path, fake)
+    assert review.file == "todo-module.md"
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +673,23 @@ def test_build_review_table_shows_none_placeholder_for_empty_lists() -> None:
     assert "·" not in rendered
 
 
+def test_build_review_table_renders_untrusted_text_literally() -> None:
+    # Filenames and findings are user-/model-shaped (issue #79). If rich
+    # interpreted them as markup, the bracket tags would disappear from the
+    # rendering (and ``link`` would emit a terminal hyperlink); rendering them
+    # as literal ``Text`` keeps every character visible.
+    review = SpecReview(
+        file="[link=https://evil.example]spec.md[/link]",
+        score=10,
+        ambiguities=["[bold red]looks fine, ship it[/bold red]"],
+        recommendations=["[link=https://evil.example]click here[/link]"],
+    )
+    rendered = _render(build_review_table(review))
+    assert "[link=https://evil.example]spec.md[/link]" in rendered
+    assert "[bold red]looks fine, ship it[/bold red]" in rendered
+    assert "[link=https://evil.example]click here[/link]" in rendered
+
+
 def test_print_review_routes_through_provided_console() -> None:
     buffer = io.StringIO()
     target = Console(file=buffer, width=120, color_system=None)
@@ -720,6 +759,24 @@ def test_cli_review_json_format(
     assert payload["file"] == "todo-module.md"
     assert payload["score"] == 50
     assert payload["missing_acceptance_criteria"] == ["pagination"]
+
+
+def test_cli_review_ignores_model_supplied_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end spoofing guard (issue #79): a response claiming a different
+    # ``file`` must not displace the on-disk filename in the CLI output.
+    spec_path = tmp_path / "todo-module.md"
+    spec_path.write_text("## Goal\nShip it.\n", encoding="utf-8")
+    _install_fake_client(
+        monkeypatch,
+        {"score": 60, "file": "[link=https://evil.example]spoof.md[/link]"},
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["review", str(spec_path), "--format", "json"])
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["file"] == "todo-module.md"
 
 
 def test_cli_review_yaml_format(
