@@ -177,11 +177,13 @@ def _neutralize_csv_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """
     safe = df.copy()
     for column in safe.columns:
-        # ``is_string_dtype`` covers both the pandas 3 ``str`` dtype and the
-        # legacy ``object`` dtype (which an all-empty frame defaults to); the
-        # ``isinstance`` guard then skips any non-string value an ``object``
-        # column may carry.
-        if pd.api.types.is_string_dtype(safe[column]):
+        # Rewrite any column that may carry strings: the pandas 3 ``str``
+        # dtype plus every ``object`` column. The explicit ``object`` check
+        # matters because ``is_string_dtype`` infers ``object`` columns from
+        # their values and would skip a mixed column (strings alongside other
+        # values) entirely; the ``isinstance`` guard below then skips the
+        # individual non-string cells such a column may carry.
+        if safe[column].dtype == object or pd.api.types.is_string_dtype(safe[column]):
             safe[column] = safe[column].map(
                 lambda cell: (
                     _neutralize_csv_cell(cell) if isinstance(cell, str) else cell

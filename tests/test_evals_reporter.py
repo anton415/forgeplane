@@ -221,6 +221,20 @@ def test_save_eval_csv_neutralizes_formula_cells(tmp_path: Path) -> None:
     assert df["file"].tolist() == [payload]
 
 
+def test_save_eval_csv_neutralizes_mixed_object_columns(tmp_path: Path) -> None:
+    # A library caller may persist an ``object`` column that mixes strings
+    # with other values; pandas does not infer such a column as string-only,
+    # but its string cells must still reach the artifact defused.
+    df = pd.DataFrame({"file": ["=EVIL()", 7], "score": [10, 20]})
+    assert df["file"].dtype == object
+    target = save_eval_csv(df, tmp_path)
+    raw = target.read_text(encoding="utf-8")
+    assert "'=EVIL()" in raw
+    # The non-string cell in the mixed column passes through untouched.
+    reloaded = pd.read_csv(target)
+    assert reloaded["file"].tolist() == ["'=EVIL()", "7"]
+
+
 # ---------------------------------------------------------------------------
 # build_eval_table / print_eval_table
 # ---------------------------------------------------------------------------
