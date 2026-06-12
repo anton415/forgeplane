@@ -27,6 +27,13 @@ from rich.table import Table
 
 from forgeplane.core.config import configure_logging, load_settings
 from forgeplane.llm.client import DEFAULT_MODEL, LLMClient, LLMError, OpenAIChatClient
+from forgeplane.specs.files import (
+    DEFAULT_MAX_FILE_COUNT,
+    DEFAULT_MAX_FILE_SIZE_BYTES,
+    DEFAULT_MAX_TOTAL_BYTES,
+    ScanError,
+    ScanPolicy,
+)
 from forgeplane.specs.reviewer import review_spec_file
 from forgeplane.specs.scanner import (
     PARTIAL_THRESHOLD,
@@ -436,6 +443,33 @@ def scan(
             ),
         ),
     ] = None,
+    # Resource safeguards (issue #80): bound the work an untrusted docs tree
+    # can force onto the scan. The defaults are generous for real-world
+    # documentation; tighten them in CI when scanning third-party trees.
+    max_file_size: Annotated[
+        int,
+        typer.Option(
+            "--max-file-size",
+            min=1,
+            help="Per-file size limit in bytes; larger files fail the scan.",
+        ),
+    ] = DEFAULT_MAX_FILE_SIZE_BYTES,
+    max_files: Annotated[
+        int,
+        typer.Option(
+            "--max-files",
+            min=1,
+            help="Maximum number of files the scan will index.",
+        ),
+    ] = DEFAULT_MAX_FILE_COUNT,
+    max_total_bytes: Annotated[
+        int,
+        typer.Option(
+            "--max-total-bytes",
+            min=1,
+            help="Cumulative size limit in bytes across all scanned files.",
+        ),
+    ] = DEFAULT_MAX_TOTAL_BYTES,
 ) -> None:
     """Scan a documentation directory and print a report."""
     logger = configure_logging(verbose=verbose)
@@ -447,26 +481,38 @@ def scan(
             "for terminal rendering only.",
             param_hint="--output-dir",
         )
-    logger.info("Scanning directory: %s", path)
-    summary = build_scan_summary(path)
-    logger.debug(
-        "Discovered %d file(s); total size %d bytes",
-        len(summary.files),
-        summary.total_size_bytes,
+    policy = ScanPolicy(
+        max_file_size_bytes=max_file_size,
+        max_file_count=max_files,
+        max_total_bytes=max_total_bytes,
     )
+    logger.info("Scanning directory: %s", path)
+    try:
+        summary = build_scan_summary(path, policy=policy)
+        logger.debug(
+            "Discovered %d file(s); total size %d bytes",
+            len(summary.files),
+            summary.total_size_bytes,
+        )
 
-    # Score each Markdown spec under a rich Progress so multi-file scans give
-    # visible feedback. The text-format branch later renders a coloured table
-    # built from these results.
-    md_entries = markdown_entries(summary)
-    results: list[ScanResult] = []
-    if md_entries:
-        logger.debug("Scoring %d Markdown spec(s)", len(md_entries))
-        with _build_progress() as progress:
-            task_id = progress.add_task("Scoring specs", total=len(md_entries))
-            for entry in md_entries:
-                results.append(score_spec_file(entry))
-                progress.advance(task_id)
+        # Score each Markdown spec under a rich Progress so multi-file scans
+        # give visible feedback. The text-format branch later renders a
+        # coloured table built from these results.
+        md_entries = markdown_entries(summary)
+        results: list[ScanResult] = []
+        if md_entries:
+            logger.debug("Scoring %d Markdown spec(s)", len(md_entries))
+            with _build_progress() as progress:
+                task_id = progress.add_task("Scoring specs", total=len(md_entries))
+                for entry in md_entries:
+                    results.append(score_spec_file(entry, policy=policy))
+                    progress.advance(task_id)
+    except ScanError as exc:
+        # Fail closed with one clear non-zero exit instead of a traceback:
+        # policy violations (symlink escape, oversized trees) and unreadable
+        # or non-UTF-8 specs all surface through the same ScanError base.
+        logger.error("Scan failed: %s", exc)
+        raise typer.BadParameter(str(exc), param_hint="PATH") from exc
 
     report = summary.to_report(results=results)
     logger.debug("Rendering report in %s format", output_format)

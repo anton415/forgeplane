@@ -8,11 +8,16 @@ from pathlib import Path
 
 def find_markdown_files(root: Path) -> list[Path]:
     """Return every ``.md`` file under ``root``, sorted for deterministic output."""
-    # is_file() drops directories named ``*.md`` and broken symlinks so callers
-    # can safely read every returned path without an extra guard.
+    # is_file() drops directories named ``*.md`` and broken symlinks; the
+    # is_symlink() guard applies the scanner-wide symlink policy, so a link
+    # cannot point discovery at a file outside ``root``.
     # Sorting by POSIX text keeps scan order stable across platforms.
     return sorted(
-        (path for path in root.rglob("*.md") if path.is_file()),
+        (
+            path
+            for path in root.rglob("*.md")
+            if path.is_file() and not path.is_symlink()
+        ),
         key=lambda path: path.as_posix(),
     )
 
