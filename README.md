@@ -618,6 +618,38 @@ The `results` array contains one entry per discovered `.md` file. Each entry
 is the JSON form of the `ScanResult` Pydantic model defined in
 `forgeplane/specs/schemas.py`.
 
+## Architecture
+
+Forgeplane keeps product logic independent from command-line input and
+output, so future interfaces (an HTTP API, machine-readable pipelines) can
+reuse the same core without rewriting business logic. The layer model, the
+mapping of every module onto it, the dependency rules, and the target package
+boundaries are documented in
+[`docs/architecture/layers.md`](docs/architecture/layers.md).
+
+The short version:
+
+- **Domain layer** — models and validation rules: the Pydantic schemas, the
+  section parser and readiness scoring, and the workflow state and domain
+  models.
+- **Application layer** — use cases callable as plain Python functions: scan
+  docs, score a spec, review a spec, generate an eval report, load settings.
+- **Infrastructure adapters** — external systems behind ports: the
+  `LLMClient` Protocol with its OpenAI HTTP adapter and the redaction
+  helpers.
+- **Interface layer (CLI)** — Typer commands, flags, exit codes, and all
+  `rich` terminal rendering. `typer` and `rich` are never imported outside
+  this layer.
+
+Dependencies point inward only: the CLI calls application functions, which
+use domain logic; core code never imports the CLI. Three known violations of
+the boundary are tracked as follow-up issues
+([#86](https://github.com/anton415/forgeplane/issues/86),
+[#87](https://github.com/anton415/forgeplane/issues/87),
+[#88](https://github.com/anton415/forgeplane/issues/88)), with an
+import-boundary guard test planned once they land
+([#89](https://github.com/anton415/forgeplane/issues/89)).
+
 ## Project structure
 
 ```text
@@ -668,6 +700,8 @@ forgeplane/
 │   ├── check_sdist.sh
 │   └── generate_report_artifact.py
 ├── docs/
+│   ├── architecture/
+│   │   └── layers.md
 │   ├── reports/
 │   │   └── scan_report.svg
 │   └── specs/
