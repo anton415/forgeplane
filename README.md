@@ -42,6 +42,11 @@ The `scan` command reports:
 - relative file list;
 - per-`.md` readiness results (score, missing sections, weak sections, TODO findings, and a readiness label).
 
+Scanning is hardened for untrusted documentation trees: symlinks are never
+followed, and configurable resource limits bound the per-file size, the file
+count, and the total bytes processed (see
+[Symlink policy and scan limits](#symlink-policy-and-scan-limits)).
+
 Output formats:
 
 - `text` — human-friendly tables rendered through [`rich`](https://rich.readthedocs.io/), including a per-file readiness table with green/yellow/red colour coding and a transient progress bar while specs are scored.
@@ -63,8 +68,8 @@ The filesystem scanning logic is split into typed modules:
 
 - `core/files.py` — recursively discovers Markdown spec files and exposes a typed UTF-8 read helper used by the spec scanners.
 - `core/config.py` — loads runtime settings (`OPENAI_API_KEY`, `LOG_LEVEL`) from `.env` via `python-dotenv` and configures the Forgeplane logger with a `rich` handler. The `.env` file is *parsed* (not loaded into `os.environ`), so only the supported keys are read and an untrusted project `.env` cannot inject ambient transport variables into the process environment.
-- `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic.
-- `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI and parses Markdown spec sections.
+- `specs/files.py` — collects file metadata, normalizes extensions, and keeps scan output deterministic. Defines the `ScanPolicy` resource limits (per-file size, file count, total bytes) and enforces the symlink policy: symlinked files are skipped with a warning and symlinked directories are never traversed, so a scanned path can never resolve outside the selected root. Policy violations raise a typed `ScanPolicyError` (subclass of the `ScanError` base the CLI catches).
+- `specs/scanner.py` — aggregates file metadata into the public scan report used by the CLI and parses Markdown spec sections. Spec files are read through a bounded, fail-closed reader that raises `SpecReadError` for unreadable, oversized, or non-UTF-8 files; the error names the file and the reason but never embeds file content.
 - `specs/reviewer.py` — assembles the review prompt, dispatches the spec to
   an `LLMClient`, parses the response, and validates it through the
   `SpecReview` schema. Any failure (HTTP, JSON, schema) surfaces as a single
@@ -380,6 +385,43 @@ uv run python scripts/generate_report_artifact.py
 
 ![Forgeplane scan report](docs/reports/scan_report.svg)
 
+### Symlink policy and scan limits
+
+`forgeplane scan` is designed to be safe against untrusted third-party
+documentation trees, both locally and in CI quality gates.
+
+**Symlink policy (not configurable).** The scanner never follows symlinks:
+symlinked files are skipped with a logged warning, and symlinked directories
+are not traversed. Every scanned path therefore physically lives under the
+selected scan root — a docs tree cannot point a `.md` path at a file outside
+it (for example `~/.ssh/id_rsa` or a CI secret).
+
+**Resource limits (configurable).** Three bounded safeguards protect against
+resource exhaustion from large files or huge trees:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--max-file-size` | `10485760` (10 MiB) | Per-file size limit in bytes |
+| `--max-files` | `10000` | Maximum number of files indexed per scan |
+| `--max-total-bytes` | `209715200` (200 MiB) | Cumulative size limit across all scanned files |
+
+Tighten the limits when scanning third-party trees in CI:
+
+```bash
+forgeplane scan path/to/docs --max-files 500 --max-file-size 1048576
+```
+
+The scan **fails closed**: exceeding any limit, or hitting an unreadable or
+non-UTF-8 `.md` file, aborts the scan with a single clear error and a
+non-zero exit code instead of crashing mid-report or emitting a partial
+payload. The per-file size limit is checked from file metadata before any
+content is read and re-checked at read time, so a file that grows between
+the two steps still fails closed. Error messages name the offending file and
+the violated limit but never echo file content, in line with the project's
+redaction policy for untrusted data. Library users get the same behaviour by
+passing a `ScanPolicy` to `scan_docs`, `build_scan_summary`, or
+`collect_files` and catching `ScanError`.
+
 ### Verbose logging
 
 Add `--verbose` (or `-v`) to log each scan step at `DEBUG` through a `rich`
@@ -614,6 +656,7 @@ forgeplane/
 │   ├── test_files.py
 │   ├── test_redaction.py
 │   ├── test_reviewer.py
+│   ├── test_scan_policy.py
 │   ├── test_scanner.py
 │   ├── test_scoring.py
 │   ├── test_workflow_model.py
@@ -708,7 +751,7 @@ runs outside a git checkout where `.gitignore` rules would not apply. Wheels
 are unaffected: they only ever package `src/forgeplane` plus the Apache-2.0
 `LICENSE` and `NOTICE` files declared in the project metadata.
 
-Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client (including the redaction guards that assert malformed JSON, off-schema responses, and unexpected provider shapes never print or log their raw content), `test_redaction.py` covers the `llm/redaction.py` helpers directly — the payload-shape summary, the JSON-decode-error redaction, and the Pydantic `ValidationError` summary that drops `input_value` while keeping the field path and error category, and replaces a rejected provider-supplied extra key with a placeholder rather than echoing it, `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering, `test_workflow_states.py` covers the workflow/task state model: the enum values, the transition tables, every valid transition, every invalid transition (asserted exhaustively as the complement over the full state-pair product), the terminal-state and no-self-transition invariants, the `tasks_may_progress` gate, and the completion/failure derivation rules, and `test_workflow_model.py` covers the workflow domain model: construction and validation of the definitions (blank ids, self-dependencies, duplicate task ids, unknown dependencies, direct and indirect cycles), the deterministic `execution_order`, the immutability of the `TaskInput`/`TaskResult`/`TaskError` payload snapshots, instance creation from a definition, the running-workflow gate on task mutations, the contract-carrying transitions (`start_task`, `record_result`), and the derivation guards on `completed`/`failed` workflow moves.
+Tests live under `tests/` and share fixtures defined in `tests/conftest.py`, which load the bundled `examples/good_spec.md` and `examples/weak_spec.md` through the section parser. `test_files.py` covers Markdown discovery against empty and nested directories, `test_scanner.py` covers the Markdown section parser, `test_scan_policy.py` covers the scan hardening from issue #80 — the symlink policy (symlinked files inside and outside the root are skipped, symlinked directories are not traversed, broken symlinks are not fatal), the `ScanPolicy` resource limits (per-file size, file count, total bytes) failing closed through both the library API and the CLI flags, and the fail-closed spec reads (unreadable, oversized-at-read-time, and non-UTF-8 files erroring without leaking raw bytes), `test_config.py` covers environment loading, log-level normalization, and the `--verbose` CLI flag, `test_scoring.py` covers readiness scoring and the threshold-to-enum mapping, `test_cli_rich.py` covers the rich rendering helpers (colour mapping, readiness table, the JSON `results` field, and the `--output-dir` report-saving path used by CI integrations), `test_reviewer.py` covers the `SpecReview` schema, the prompt assembly, the `parse_review_response` validation, the `OpenAIChatClient` HTTP path (driven by `httpx.MockTransport`), and the `forgeplane review` CLI command using a `Protocol`-conformant fake LLM client (including the redaction guards that assert malformed JSON, off-schema responses, and unexpected provider shapes never print or log their raw content), `test_redaction.py` covers the `llm/redaction.py` helpers directly — the payload-shape summary, the JSON-decode-error redaction, and the Pydantic `ValidationError` summary that drops `input_value` while keeping the field path and error category, and replaces a rejected provider-supplied extra key with a placeholder rather than echoing it, `test_evals_reporter.py` covers the pandas DataFrame builder, the mean-score and pass-rate aggregates (default and custom thresholds), the timestamped CSV persistence, and the rich eval table rendering, `test_workflow_states.py` covers the workflow/task state model: the enum values, the transition tables, every valid transition, every invalid transition (asserted exhaustively as the complement over the full state-pair product), the terminal-state and no-self-transition invariants, the `tasks_may_progress` gate, and the completion/failure derivation rules, and `test_workflow_model.py` covers the workflow domain model: construction and validation of the definitions (blank ids, self-dependencies, duplicate task ids, unknown dependencies, direct and indirect cycles), the deterministic `execution_order`, the immutability of the `TaskInput`/`TaskResult`/`TaskError` payload snapshots, instance creation from a definition, the running-workflow gate on task mutations, the contract-carrying transitions (`start_task`, `record_result`), and the derivation guards on `completed`/`failed` workflow moves.
 
 ## Roadmap
 

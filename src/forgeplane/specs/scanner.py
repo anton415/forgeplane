@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import Final, TypedDict
 
 from forgeplane.core.config import get_logger
-from forgeplane.specs.files import FileEntry, collect_files
+from forgeplane.specs.files import (
+    DEFAULT_MAX_FILE_SIZE_BYTES,
+    DEFAULT_SCAN_POLICY,
+    FileEntry,
+    ScanError,
+    ScanPolicy,
+    collect_files,
+)
 from forgeplane.specs.schemas import Readiness, ScanResult
 
 # Module-level logger so scan steps surface under --verbose without each
@@ -70,6 +77,16 @@ _TODO_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:TODO|FIXME|TBD)\b")
 # circular imports when CLI helpers want to colour-code a raw score.
 READY_THRESHOLD: Final[int] = 80
 PARTIAL_THRESHOLD: Final[int] = 60
+
+
+class SpecReadError(ScanError):
+    """Raised when a spec file cannot be read safely (fail closed).
+
+    Covers unreadable files, non-UTF-8 content, and files that exceed the
+    per-file size limit at read time. The message names the file and the
+    reason but never embeds file content, matching the project's stance of
+    keeping untrusted bytes out of stderr and CI logs.
+    """
 
 
 class ScanResultRecord(TypedDict):
@@ -142,12 +159,17 @@ def extension_label(extension: str | None) -> str:
     return extension
 
 
-def build_scan_summary(path: Path, files: list[FileEntry] | None = None) -> ScanSummary:
+def build_scan_summary(
+    path: Path,
+    files: list[FileEntry] | None = None,
+    policy: ScanPolicy = DEFAULT_SCAN_POLICY,
+) -> ScanSummary:
     # Passing files is useful for tests or future scanners that already have
-    # collected FileEntry objects; otherwise the directory is scanned here.
+    # collected FileEntry objects; otherwise the directory is scanned here
+    # under the resource limits and symlink policy of ``policy``.
     if files is None:
         _logger.debug("Collecting files under %s", path)
-        file_entries = collect_files(path)
+        file_entries = collect_files(path, policy)
     else:
         file_entries = files
     extensions: dict[str, int] = {}
@@ -174,13 +196,15 @@ def build_scan_summary(path: Path, files: list[FileEntry] | None = None) -> Scan
     )
 
 
-def scan_docs(path: Path) -> ScanReport:
+def scan_docs(path: Path, policy: ScanPolicy = DEFAULT_SCAN_POLICY) -> ScanReport:
     # Score every discovered Markdown spec so the public scanner entry point
     # honours the ``ScanReport.results`` contract for direct API callers.
     # Without this, only the CLI (which scores results itself) would populate
     # the readiness data; library users would always see ``results == []``.
-    summary = build_scan_summary(path)
-    results = [score_spec_file(entry) for entry in markdown_entries(summary)]
+    summary = build_scan_summary(path, policy=policy)
+    results = [
+        score_spec_file(entry, policy=policy) for entry in markdown_entries(summary)
+    ]
     return summary.to_report(results=results)
 
 
@@ -235,9 +259,42 @@ def parse_sections(text: str) -> dict[str, str | None]:
     }
 
 
-def parse_spec_file(path: Path) -> dict[str, str | None]:
+def read_spec_text(
+    path: Path, *, max_size_bytes: int = DEFAULT_MAX_FILE_SIZE_BYTES
+) -> str:
+    """Read a spec file as UTF-8 text, failing closed on out-of-policy input.
+
+    Raises :class:`SpecReadError` when the file is unreadable, larger than
+    ``max_size_bytes`` (re-checked here so a file that grew after the stat
+    pass still fails), or not valid UTF-8. The UnicodeDecodeError message is
+    rewritten to carry only the byte offset, never the offending bytes.
+    """
+    try:
+        with path.open("rb") as handle:
+            # Read one byte past the limit: a full ``max_size_bytes + 1``
+            # result proves the file is oversized without buffering the rest.
+            data = handle.read(max_size_bytes + 1)
+    except OSError as exc:
+        raise SpecReadError(
+            f"Cannot read spec file {path}: {exc.strerror or exc}"
+        ) from exc
+    if len(data) > max_size_bytes:
+        raise SpecReadError(
+            f"Spec file {path} exceeds the per-file limit of {max_size_bytes} bytes"
+        )
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SpecReadError(
+            f"Spec file {path} is not valid UTF-8 (invalid byte at offset {exc.start})"
+        ) from exc
+
+
+def parse_spec_file(
+    path: Path, *, max_size_bytes: int = DEFAULT_MAX_FILE_SIZE_BYTES
+) -> dict[str, str | None]:
     """Read a Markdown spec from disk and parse its expected sections."""
-    return parse_sections(path.read_text(encoding="utf-8"))
+    return parse_sections(read_spec_text(path, max_size_bytes=max_size_bytes))
 
 
 def _section_min_length(name: str) -> int:
@@ -296,10 +353,12 @@ def classify_readiness(score: int) -> Readiness:
     return "not_ready"
 
 
-def score_spec_file(file: FileEntry) -> ScanResult:
+def score_spec_file(
+    file: FileEntry, *, policy: ScanPolicy = DEFAULT_SCAN_POLICY
+) -> ScanResult:
     """Parse a single Markdown spec and turn it into a ScanResult."""
     _logger.debug("Scoring spec %s", file.relative_path)
-    sections = parse_spec_file(file.path)
+    sections = parse_spec_file(file.path, max_size_bytes=policy.max_file_size_bytes)
     scoring = score_sections(sections)
     return ScanResult(
         file=file.relative_path,
