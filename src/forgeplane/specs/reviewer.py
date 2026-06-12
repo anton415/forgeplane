@@ -82,8 +82,10 @@ def parse_review_response(payload: str, *, file: str | None = None) -> SpecRevie
     """Parse a raw LLM JSON payload into a validated :class:`SpecReview`.
 
     ``file`` is attached after validation so callers that read the spec from
-    disk can preserve the source path on the resulting review even when the
-    LLM omits the field from its response.
+    disk can preserve the source path on the resulting review. The caller
+    path always wins over any ``file`` value present in the response: the
+    response is untrusted, and a spoofed filename would otherwise flow into
+    CSV artifacts and rendered reports (issue #79).
     """
     try:
         data = json.loads(payload)
@@ -110,7 +112,14 @@ def parse_review_response(payload: str, *, file: str | None = None) -> SpecRevie
             f"({summarize_validation_error(exc)})"
         ) from exc
 
-    if file is not None and review.file is None:
+    if file is not None:
+        if review.file is not None and review.file != file:
+            # The model tried to claim a different source file. The value is
+            # untrusted, so it is discarded (and deliberately not logged) in
+            # favour of the local caller-provided path.
+            _logger.debug(
+                "Discarding model-provided file field in favour of the caller path"
+            )
         # ``model_copy`` keeps the original instance immutable from the
         # caller's perspective while still attaching the source path.
         review = review.model_copy(update={"file": file})

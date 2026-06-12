@@ -84,6 +84,44 @@ def test_build_readiness_table_lists_every_result() -> None:
     assert "not_ready" in rendered
 
 
+def test_build_readiness_table_renders_markup_filenames_literally() -> None:
+    # A file on disk can be named with rich markup (issue #79); the table must
+    # render the name as literal characters instead of interpreting it as
+    # styling or a terminal hyperlink.
+    spoofed = "[link=https://evil.example]good.md[/link]"
+    results = [
+        ScanResult(
+            file=spoofed,
+            score=100,
+            missing=[],
+            weak=[],
+            todos_found=[],
+            readiness="ready",
+        ),
+    ]
+    rendered = _render(build_readiness_table(results))
+    assert spoofed in rendered
+
+
+def test_print_text_report_renders_filenames_literally() -> None:
+    # The scan report path and file list are user-shaped values; markup-shaped
+    # names must reach the terminal unmodified rather than being interpreted.
+    report: cli.ScanReport = {
+        "path": "/tmp/[red]docs[/red]",
+        "files_count": 1,
+        "total_size_bytes": 10,
+        "extensions": {".md": 1},
+        "files": ["[link=https://evil.example]a.md[/link]"],
+        "results": [],
+    }
+    buffer = io.StringIO()
+    target = Console(file=buffer, width=120, color_system=None)
+    cli.print_text_report(report, target=target)
+    rendered = buffer.getvalue()
+    assert "[red]docs[/red]" in rendered
+    assert "[link=https://evil.example]a.md[/link]" in rendered
+
+
 def test_print_readiness_table_skips_empty_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

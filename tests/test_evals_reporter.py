@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from rich.console import Console
 
 from forgeplane.evals.reporter import (
@@ -15,6 +16,7 @@ from forgeplane.evals.reporter import (
     DEFAULT_PASS_THRESHOLD,
     EvalReport,
     EvalSummary,
+    _neutralize_csv_cell,
     build_eval_table,
     build_review_dataframe,
     compute_summary,
@@ -189,6 +191,36 @@ def test_save_eval_csv_creates_missing_output_dir(tmp_path: Path) -> None:
     assert target.is_file()
 
 
+@pytest.mark.parametrize("prefix", ["=", "+", "-", "@", "\t", "\r", "\n"])
+def test_neutralize_csv_cell_defuses_each_formula_prefix(prefix: str) -> None:
+    # Every spreadsheet formula metacharacter (and the CR/LF/tab structure
+    # controls) must gain the quote prefix so Excel/LibreOffice render the
+    # cell as literal text instead of evaluating it (issue #79).
+    assert _neutralize_csv_cell(f"{prefix}payload.md") == f"'{prefix}payload.md"
+
+
+def test_neutralize_csv_cell_leaves_benign_values_unchanged() -> None:
+    # Ordinary filenames and the inline placeholder must round-trip without
+    # the quote prefix; metacharacters are only dangerous in first position.
+    assert _neutralize_csv_cell("spec.md") == "spec.md"
+    assert _neutralize_csv_cell("<inline>") == "<inline>"
+    assert _neutralize_csv_cell("a=b.md") == "a=b.md"
+    assert _neutralize_csv_cell("") == ""
+
+
+def test_save_eval_csv_neutralizes_formula_cells(tmp_path: Path) -> None:
+    # A model-influenced filename carrying a spreadsheet formula must reach
+    # the artifact defused, while the in-memory DataFrame keeps the raw value
+    # for library callers doing their own analysis.
+    payload = '=HYPERLINK("http://evil.example","open")'
+    df = build_review_dataframe([_make_review(file=payload, score=10)])
+    target = save_eval_csv(df, tmp_path)
+    reloaded = pd.read_csv(target)
+    assert reloaded["file"].tolist() == [f"'{payload}"]
+    # The neutralization happens on a copy at write time only.
+    assert df["file"].tolist() == [payload]
+
+
 # ---------------------------------------------------------------------------
 # build_eval_table / print_eval_table
 # ---------------------------------------------------------------------------
@@ -211,6 +243,16 @@ def test_build_eval_table_renders_rows_and_summary() -> None:
     assert "Pass rate" in rendered
     assert "50.00%" in rendered
     assert "Total reviews" in rendered
+
+
+def test_build_eval_table_renders_markup_filenames_literally() -> None:
+    # A filename shaped like rich markup (issue #79) must surface as literal
+    # characters: interpreted markup would swallow the bracket tags and could
+    # emit a terminal hyperlink pointing wherever the model chose.
+    spoofed = "[link=https://evil.example]spec.md[/link]"
+    df = build_review_dataframe([_make_review(file=spoofed, score=90)])
+    rendered = _render(build_eval_table(df, compute_summary(df)))
+    assert spoofed in rendered
 
 
 def test_print_eval_table_routes_through_provided_console() -> None:

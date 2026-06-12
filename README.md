@@ -491,8 +491,10 @@ forgeplane review docs/specs/todo-module.md --format json
 forgeplane review docs/specs/todo-module.md --format yaml
 ```
 
-Example JSON payload (the source file name is attached after validation, so
-it never relies on the model to populate it):
+Example JSON payload (the source file name is attached after validation and
+always reflects the file you passed on the command line — any `file` value
+the model itself returns is discarded, so a response cannot relabel the
+report):
 
 ```json
 {
@@ -541,6 +543,25 @@ The full low-level exception is still chained on `__cause__` for interactive
 debugging, but it is not rendered by default, so reviewed-spec content and
 provider-controlled text stay out of stderr and archived CI logs.
 
+#### Report spoofing protections
+
+Even a schema-valid response is still untrusted display data, so the report
+pipeline neutralizes it before it reaches a terminal or a spreadsheet:
+
+- **Model-supplied filenames are discarded.** When a spec is reviewed from
+  disk, the local path always overrides any `file` field present in the
+  response, so a response cannot relabel which spec a review belongs to.
+- **Terminal output is rendered literally.** Filenames and review findings
+  are printed as literal rich `Text`, never parsed as console markup — a
+  finding shaped like `[link=...]click here[/link]` shows up as those exact
+  characters instead of becoming a clickable terminal hyperlink or hidden
+  styling.
+- **Eval CSV cells are formula-neutralized.** String cells that begin with a
+  spreadsheet formula metacharacter (`=`, `+`, `-`, `@`, tab, CR/LF) are
+  prefixed with a single quote before the artifact is written, following the
+  OWASP CSV-injection mitigation, so opening the file in Excel or LibreOffice
+  cannot execute an injected formula.
+
 ### Track review quality across runs
 
 The `forgeplane.evals.reporter` module turns a batch of
@@ -571,6 +592,11 @@ different quality bar is in play. The returned `EvalReport` carries the
 DataFrame, the `EvalSummary`, and the on-disk CSV path (or `None` when no
 `output_dir` was supplied). Call `print_eval_table` to render the same
 data as a rich table in the terminal.
+
+The persisted CSV applies the spoofing protections described above: string
+cells starting with a formula metacharacter are quote-prefixed at write time
+(the in-memory DataFrame keeps the raw values), and the terminal table
+renders filenames as literal text.
 
 ### Generate API specification
 
